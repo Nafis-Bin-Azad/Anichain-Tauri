@@ -1,8 +1,8 @@
 {
-  "$schema": "https://schema.tauri.app/config/2.0.0-rc",
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "anichain",
   "version": "0.1.0",
-  "identifier": "com.anichain.dev",
+  "identifier": "com.tauri.dev",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",

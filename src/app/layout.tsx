@@ -1,8 +1,14 @@
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
+import { ToastProvider } from "@/contexts/ToastContext";
+import Navbar from "@/components/Navbar";
 
-export const metadata = {
-  title: "Anichain",
-  description: "Your Tauri + Next.js + Tailwind CSS app",
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "AniChain",
+  description: "Anime Management System",
 };
 
 export default function RootLayout({
@@ -11,8 +17,17 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body className="antialiased">{children}</body>
+    <html lang="en" className="h-full">
+      <body className={`${inter.className} h-full bg-gray-50`}>
+        <ToastProvider>
+          <div className="min-h-screen">
+            <Navbar />
+            <main className="container mx-auto px-4 pt-20 pb-8">
+              {children}
+            </main>
+          </div>
+        </ToastProvider>
+      </body>
     </html>
   );
 }
