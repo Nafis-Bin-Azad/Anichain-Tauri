@@ -4,17 +4,9 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  distDir: "dist",
-  webpack: (config, { isServer }) => {
-    if (!isServer) {
-      config.resolve.fallback = {
-        ...config.resolve.fallback,
-        fs: false,
-        path: false,
-        os: false,
-      };
-    }
-    return config;
+  // Disable server components since we're using Tauri
+  experimental: {
+    appDir: true,
   },
 };
 

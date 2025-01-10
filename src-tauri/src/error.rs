@@ -1,38 +1,34 @@
-use serde::Serialize;
-
-#[derive(Debug, Serialize)]
-pub struct Error {
-    message: String,
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    #[error("Failed to initialize qBittorrent client: {0}")]
+    QBittorrentInitError(String),
+    #[error("Failed to fetch RSS feed: {0}")]
+    RssFeedError(String),
+    #[error("Failed to fetch schedule: {0}")]
+    ScheduleError(String),
+    #[error("Failed to manage tracked anime: {0}")]
+    TrackingError(String),
+    #[error("Failed to manage qBittorrent rules: {0}")]
+    RuleManagementError(String),
+    #[error("qBittorrent client not initialized")]
+    QBittorrentNotInitialized,
 }
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for Error {}
 
 impl From<reqwest::Error> for Error {
     fn from(err: reqwest::Error) -> Self {
-        Error {
-            message: err.to_string(),
-        }
+        Error::QBittorrentInitError(err.to_string())
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error {
-            message: err.to_string(),
-        }
-    }
-}
-
-impl From<anyhow::Error> for Error {
-    fn from(err: anyhow::Error) -> Self {
-        Error {
-            message: err.to_string(),
-        }
+// Implement Serialize manually to ensure proper error serialization
+impl serde::Serialize for Error {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("Error", 2)?;
+        state.serialize_field("error", &self.to_string())?;
+        state.end()
     }
 } 
