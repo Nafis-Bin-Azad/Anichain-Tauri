@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Image from "next/image";
-import { tauri } from "@/lib/tauri";
+import { invokeTauri } from "@/lib/tauri";
 import { Loader2 } from "lucide-react";
 import AnimeDetails from "./AnimeDetails";
 
@@ -11,6 +11,8 @@ interface AnimeCardProps {
   episode: string;
   isTracked: boolean;
   onTrackChange: () => void;
+  imageUrl?: string;
+  summary?: string;
 }
 
 export default function AnimeCard({
@@ -18,6 +20,8 @@ export default function AnimeCard({
   episode,
   isTracked,
   onTrackChange,
+  imageUrl,
+  summary,
 }: AnimeCardProps) {
   const [loading, setLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
@@ -31,9 +35,9 @@ export default function AnimeCard({
     setLoading(true);
     try {
       if (isTracked) {
-        await tauri.invoke("untrack_anime", { title });
+        await invokeTauri("untrack_anime", { title });
       } else {
-        await tauri.invoke("track_anime", { title });
+        await invokeTauri("track_anime", { title });
       }
       onTrackChange();
     } catch (error) {
@@ -49,13 +53,25 @@ export default function AnimeCard({
         className="group relative bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden cursor-pointer"
       >
         <div className="aspect-[2/3] relative bg-gray-100">
-          <div className="w-full h-full bg-gray-200 animate-pulse" />
+          {imageUrl ? (
+            <Image
+              src={imageUrl}
+              alt={title}
+              fill
+              className="object-cover transition-transform duration-200 group-hover:scale-105"
+            />
+          ) : (
+            <div className="w-full h-full bg-gray-200 animate-pulse" />
+          )}
         </div>
         <div className="p-4 space-y-2">
           <h3 className="text-sm font-semibold text-gray-900 line-clamp-2 group-hover:text-blue-600 transition-colors">
             {title}
           </h3>
           <p className="text-sm text-gray-600">{episode}</p>
+          {summary && (
+            <p className="text-xs text-gray-500 line-clamp-2">{summary}</p>
+          )}
           <button
             onClick={handleTrack}
             disabled={loading}

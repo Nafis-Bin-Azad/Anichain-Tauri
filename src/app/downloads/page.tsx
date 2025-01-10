@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { tauri } from "@/lib/tauri";
+import { invokeTauri } from "@/lib/tauri";
 import {
   Loader2,
   Download,
@@ -24,7 +24,7 @@ export default function Downloads() {
 
   const loadDownloads = async () => {
     try {
-      const data = await tauri.invoke<Download[]>("get_downloads");
+      const data = await invokeTauri<Download[]>("get_downloads");
       setDownloads(data);
     } catch (error) {
       console.error("Failed to load downloads:", error);
@@ -35,7 +35,7 @@ export default function Downloads() {
 
   const removeDownload = async (title: string, episode: string) => {
     try {
-      await tauri.invoke("remove_download", { title, episode });
+      await invokeTauri("remove_download", { title, episode });
       loadDownloads();
     } catch (error) {
       console.error("Failed to remove download:", error);

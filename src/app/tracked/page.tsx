@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { tauri } from "@/lib/tauri";
+import { invokeTauri } from "@/lib/tauri";
 import { Loader2 } from "lucide-react";
 import AnimeCard from "@/components/AnimeCard";
 
@@ -17,7 +17,7 @@ export default function Tracked() {
 
   const loadTrackedAnime = async () => {
     try {
-      const data = await tauri.invoke<TrackedAnime[]>(
+      const data = await invokeTauri<TrackedAnime[]>(
         "get_tracked_anime_details"
       );
       setTrackedAnime(data);

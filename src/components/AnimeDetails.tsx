@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { tauri } from "@/lib/tauri";
+import { invokeTauri } from "@/lib/tauri";
 import { Loader2, Star, Calendar, Film } from "lucide-react";
 import Image from "next/image";
 import { useToast } from "@/contexts/ToastContext";
@@ -30,14 +30,14 @@ export default function AnimeDetails({ title, onClose }: AnimeDetailsProps) {
   useEffect(() => {
     const fetchDetails = async () => {
       try {
-        const data = await tauri.invoke<AnimeDetails>("fetch_anime_details", {
+        const data = await invokeTauri<AnimeDetails>("fetch_anime_details", {
           title,
         });
         setDetails(data);
 
         // Cache the image
         if (data.image_url) {
-          await tauri.invoke("cache_anime_image", {
+          await invokeTauri("cache_anime_image", {
             url: data.image_url,
             title: data.title,
           });

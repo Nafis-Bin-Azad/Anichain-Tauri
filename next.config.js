@@ -5,7 +5,6 @@ const nextConfig = {
     unoptimized: true,
   },
   distDir: "dist",
-  transpilePackages: ["@tauri-apps/api"],
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.resolve.fallback = {

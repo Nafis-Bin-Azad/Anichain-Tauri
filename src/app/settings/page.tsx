@@ -1,192 +1,202 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { tauri } from "@/lib/tauri";
-import { Loader2, Save } from "lucide-react";
-import { useToast } from "@/contexts/ToastContext";
+import { useState, useEffect } from "react";
+import { invokeTauri } from "@/lib/tauri";
+import { Loader2 } from "lucide-react";
 
-interface Settings {
-  rss_feed_url: string;
-  download_path: string;
-  qbittorrent_url: string;
-  qbittorrent_username: string;
-  qbittorrent_password: string;
+interface QBitTorrentRule {
+  name: string;
+  pattern: string;
+  save_path: string;
+  enabled: boolean;
 }
 
 export default function Settings() {
-  const [settings, setSettings] = useState<Settings>({
-    rss_feed_url: "",
-    download_path: "",
-    qbittorrent_url: "",
-    qbittorrent_username: "",
-    qbittorrent_password: "",
-  });
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const { showToast } = useToast();
+  const [url, setUrl] = useState("http://localhost:8080");
+  const [username, setUsername] = useState("admin");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [rules, setRules] = useState<QBitTorrentRule[]>([]);
 
   useEffect(() => {
-    const loadSettings = async () => {
-      try {
-        const data = await tauri.invoke<Settings>("get_settings");
-        setSettings(data);
-      } catch (error) {
-        console.error("Failed to load settings:", error);
-        showToast("Failed to load settings", "error");
-      } finally {
-        setLoading(false);
-      }
-    };
+    loadRules();
+  }, []);
 
-    loadSettings();
-  }, [showToast]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
+  const loadRules = async () => {
     try {
-      await tauri.invoke("save_settings", { settings });
-      showToast("Settings saved successfully", "success");
-    } catch (error) {
-      console.error("Failed to save settings:", error);
-      showToast("Failed to save settings", "error");
-    } finally {
-      setSaving(false);
+      const rules = await invokeTauri<QBitTorrentRule[]>(
+        "get_qbittorrent_rules"
+      );
+      setRules(rules);
+    } catch (err) {
+      console.error("Failed to load qBittorrent rules:", err);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[calc(100vh-8rem)]">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
+  const handleConnect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await invokeTauri("initialize_qbittorrent", {
+        url,
+        username,
+        password,
+      });
+      setSuccess("Successfully connected to qBittorrent!");
+      loadRules();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
+    <div className="space-y-8">
+      <div>
         <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
+        <p className="mt-1 text-sm text-gray-600">
+          Configure your qBittorrent connection and RSS rules
+        </p>
       </div>
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div className="bg-white shadow-sm rounded-lg p-6 space-y-6">
-          <div className="space-y-2">
-            <label
-              htmlFor="rss_feed_url"
-              className="block text-sm font-medium text-gray-700"
-            >
-              RSS Feed URL
-            </label>
-            <input
-              type="url"
-              id="rss_feed_url"
-              value={settings.rss_feed_url}
-              onChange={(e) =>
-                setSettings({ ...settings, rss_feed_url: e.target.value })
-              }
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-              required
-            />
-          </div>
 
-          <div className="space-y-2">
-            <label
-              htmlFor="download_path"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Download Path
-            </label>
-            <input
-              type="text"
-              id="download_path"
-              value={settings.download_path}
-              onChange={(e) =>
-                setSettings({ ...settings, download_path: e.target.value })
-              }
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-              required
-            />
+      <div className="bg-white shadow sm:rounded-lg">
+        <div className="px-4 py-5 sm:p-6">
+          <h3 className="text-lg font-medium leading-6 text-gray-900">
+            qBittorrent Connection
+          </h3>
+          <div className="mt-2 max-w-xl text-sm text-gray-500">
+            <p>Enter your qBittorrent WebUI credentials</p>
           </div>
-
-          <div className="space-y-2">
-            <label
-              htmlFor="qbittorrent_url"
-              className="block text-sm font-medium text-gray-700"
-            >
-              qBittorrent URL
-            </label>
-            <input
-              type="url"
-              id="qbittorrent_url"
-              value={settings.qbittorrent_url}
-              onChange={(e) =>
-                setSettings({ ...settings, qbittorrent_url: e.target.value })
-              }
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-              required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label
-              htmlFor="qbittorrent_username"
-              className="block text-sm font-medium text-gray-700"
-            >
-              qBittorrent Username
-            </label>
-            <input
-              type="text"
-              id="qbittorrent_username"
-              value={settings.qbittorrent_username}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  qbittorrent_username: e.target.value,
-                })
-              }
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-              required
-            />
-          </div>
-
-          <div className="space-y-2">
-            <label
-              htmlFor="qbittorrent_password"
-              className="block text-sm font-medium text-gray-700"
-            >
-              qBittorrent Password
-            </label>
-            <input
-              type="password"
-              id="qbittorrent_password"
-              value={settings.qbittorrent_password}
-              onChange={(e) =>
-                setSettings({
-                  ...settings,
-                  qbittorrent_password: e.target.value,
-                })
-              }
-              className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
-              required
-            />
-          </div>
-        </div>
-
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            disabled={saving}
-            className="inline-flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {saving ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4 mr-2" />
+          <form onSubmit={handleConnect} className="mt-5 space-y-4">
+            <div>
+              <label
+                htmlFor="url"
+                className="block text-sm font-medium text-gray-700"
+              >
+                WebUI URL
+              </label>
+              <input
+                type="url"
+                name="url"
+                id="url"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+                placeholder="http://localhost:8080"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="username"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Username
+              </label>
+              <input
+                type="text"
+                name="username"
+                id="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-gray-700"
+              >
+                Password
+              </label>
+              <input
+                type="password"
+                name="password"
+                id="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm"
+              />
+            </div>
+            {error && (
+              <div className="rounded-md bg-red-50 p-4">
+                <div className="flex">
+                  <div className="ml-3">
+                    <h3 className="text-sm font-medium text-red-800">Error</h3>
+                    <div className="mt-2 text-sm text-red-700">
+                      <p>{error}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
-            Save Settings
-          </button>
+            {success && (
+              <div className="rounded-md bg-green-50 p-4">
+                <div className="flex">
+                  <div className="ml-3">
+                    <p className="text-sm font-medium text-green-800">
+                      {success}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+            <button
+              type="submit"
+              disabled={loading}
+              className={`inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${
+                loading ? "opacity-75 cursor-not-allowed" : ""
+              }`}
+            >
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : null}
+              Connect
+            </button>
+          </form>
         </div>
-      </form>
+      </div>
+
+      {rules.length > 0 && (
+        <div className="bg-white shadow sm:rounded-lg">
+          <div className="px-4 py-5 sm:p-6">
+            <h3 className="text-lg font-medium leading-6 text-gray-900">
+              RSS Rules
+            </h3>
+            <div className="mt-4 space-y-4">
+              {rules.map((rule) => (
+                <div
+                  key={rule.name}
+                  className="border rounded-lg p-4 space-y-2"
+                >
+                  <h4 className="font-medium">{rule.name}</h4>
+                  <p className="text-sm text-gray-600">
+                    Pattern: {rule.pattern}
+                  </p>
+                  <p className="text-sm text-gray-600">
+                    Save Path: {rule.save_path}
+                  </p>
+                  <div className="flex items-center space-x-2">
+                    <div
+                      className={`w-2 h-2 rounded-full ${
+                        rule.enabled ? "bg-green-500" : "bg-red-500"
+                      }`}
+                    />
+                    <span className="text-sm text-gray-600">
+                      {rule.enabled ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
