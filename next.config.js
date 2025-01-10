@@ -4,9 +4,14 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  // Disable server components since we're using Tauri
-  experimental: {
-    appDir: true,
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        "@tauri-apps/api": false,
+      };
+    }
+    return config;
   },
 };
 

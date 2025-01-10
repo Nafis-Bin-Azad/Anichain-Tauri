@@ -6,6 +6,7 @@ use app_lib::commands::*;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
             initialize_qbittorrent,
             fetch_rss_feed,
