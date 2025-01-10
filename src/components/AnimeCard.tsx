@@ -10,7 +10,7 @@ interface AnimeCardProps {
   title: string;
   episode: string;
   isTracked: boolean;
-  onTrackChange: () => void;
+  onTrackChange: (isTracked: boolean) => Promise<void>;
   imageUrl?: string;
   summary?: string;
 }
@@ -26,42 +26,37 @@ export default function AnimeCard({
   const [loading, setLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
 
-  const handleClick = () => {
-    setShowDetails(true);
-  };
-
   const handleTrack = async (e: React.MouseEvent) => {
     e.stopPropagation();
     setLoading(true);
     try {
-      if (isTracked) {
-        await invokeTauri("untrack_anime", { title });
-      } else {
-        await invokeTauri("track_anime", { title });
-      }
-      onTrackChange();
+      await onTrackChange(isTracked);
     } catch (error) {
-      console.error("Failed to update tracking:", error);
+      console.error("Failed to track anime:", error);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   return (
     <>
       <div
-        onClick={handleClick}
-        className="group relative bg-white rounded-lg shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden cursor-pointer"
+        className="group relative bg-white rounded-lg shadow-md overflow-hidden cursor-pointer hover:shadow-lg transition-shadow duration-200"
+        onClick={() => setShowDetails(true)}
       >
-        <div className="aspect-[2/3] relative bg-gray-100">
+        <div className="aspect-[3/4] relative bg-gray-200">
           {imageUrl ? (
             <Image
               src={imageUrl}
               alt={title}
               fill
-              className="object-cover transition-transform duration-200 group-hover:scale-105"
+              className="object-cover"
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
             />
           ) : (
-            <div className="w-full h-full bg-gray-200 animate-pulse" />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="text-gray-400">No Image</span>
+            </div>
           )}
         </div>
         <div className="p-4 space-y-2">

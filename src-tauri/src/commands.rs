@@ -40,7 +40,7 @@ pub struct Rule {
     pub save_path: String,
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn initialize_qbittorrent(url: String, username: String, password: String) -> Result<(), Error> {
     let client = QBittorrent::new(url, username.clone(), password.clone());
     client.login(&username, &password).await?;
@@ -49,18 +49,31 @@ pub async fn initialize_qbittorrent(url: String, username: String, password: Str
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn fetch_rss_feed() -> Result<Vec<AnimeEntry>, Error> {
-    Ok(vec![AnimeEntry {
-        title: "Test Anime".to_string(),
-        link: "https://example.com".to_string(),
-        date: "2024-01-10".to_string(),
-        image_url: None,
-        summary: None,
-    }])
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://subsplease.org/rss/?r=1080")
+        .send()
+        .await?
+        .text()
+        .await?;
+
+    let feed = feed_rs::parser::parse(response.as_bytes())?;
+    let entries: Vec<AnimeEntry> = feed.entries.into_iter().map(|entry| {
+        AnimeEntry {
+            title: entry.title.map(|t| t.content).unwrap_or_default(),
+            link: entry.links.first().map(|l| l.href.clone()).unwrap_or_default(),
+            date: entry.published.map(|d| d.to_string()).unwrap_or_default(),
+            image_url: None,
+            summary: entry.summary.map(|s| s.content),
+        }
+    }).collect();
+
+    Ok(entries)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_schedule() -> Result<Vec<ScheduleEntry>, Error> {
     Ok(vec![ScheduleEntry {
         title: "Test Schedule".to_string(),
@@ -71,13 +84,13 @@ pub async fn get_schedule() -> Result<Vec<ScheduleEntry>, Error> {
     }])
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_tracked_anime() -> Result<Vec<String>, Error> {
     let tracked = TRACKED_ANIME.lock().unwrap().clone();
     Ok(tracked)
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn track_anime(title: String) -> Result<(), Error> {
     let mut tracked = TRACKED_ANIME.lock().unwrap();
     if !tracked.contains(&title) {
@@ -86,14 +99,14 @@ pub async fn track_anime(title: String) -> Result<(), Error> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn untrack_anime(title: String) -> Result<(), Error> {
     let mut tracked = TRACKED_ANIME.lock().unwrap();
     tracked.retain(|t| t != &title);
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn get_qbittorrent_rules() -> Result<Vec<QBitTorrentRule>, Error> {
     Ok(vec![QBitTorrentRule {
         name: "Test Rule".to_string(),
@@ -103,7 +116,7 @@ pub async fn get_qbittorrent_rules() -> Result<Vec<QBitTorrentRule>, Error> {
     }])
 }
 
-#[tauri::command]
+#[tauri::command(rename_all = "snake_case")]
 pub async fn add_qbittorrent_rule(rule: Rule) -> Result<(), Error> {
     let client = {
         let qb_client = QB_CLIENT.lock().unwrap();

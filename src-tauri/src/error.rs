@@ -1,9 +1,9 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Failed to initialize qBittorrent client: {0}")]
-    QBittorrentInitError(String),
-    #[error("Failed to fetch RSS feed: {0}")]
-    RssFeedError(String),
+    #[error("HTTP client error: {0}")]
+    HttpClient(#[from] reqwest::Error),
+    #[error("Failed to parse RSS feed: {0}")]
+    RssFeedError(#[from] feed_rs::parser::ParseFeedError),
     #[error("Failed to fetch schedule: {0}")]
     ScheduleError(String),
     #[error("Failed to manage tracked anime: {0}")]
@@ -12,12 +12,6 @@ pub enum Error {
     RuleManagementError(String),
     #[error("qBittorrent client not initialized")]
     QBittorrentNotInitialized,
-}
-
-impl From<reqwest::Error> for Error {
-    fn from(err: reqwest::Error) -> Self {
-        Error::QBittorrentInitError(err.to_string())
-    }
 }
 
 // Implement Serialize manually to ensure proper error serialization
