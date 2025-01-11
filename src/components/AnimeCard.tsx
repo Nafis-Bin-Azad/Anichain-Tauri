@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import Image from "next/image";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AnimeCardProps {
@@ -29,16 +28,16 @@ export default function AnimeCard({
       const desc = await invoke<string>("get_anime_description", { title });
       setDescription(desc);
     } catch (error) {
-      setDescription("Failed to load description");
       console.error("Failed to load description:", error);
+      setDescription("Failed to load description");
     }
   };
 
   const handleClick = () => {
-    setIsFlipped(!isFlipped);
     if (!isFlipped) {
       loadDescription();
     }
+    setIsFlipped(!isFlipped);
   };
 
   const cleanTitle = title.replace("[SubsPlease]", "").split(" - ")[0].trim();
@@ -52,11 +51,10 @@ export default function AnimeCard({
       <div className={`absolute w-full h-full ${isFlipped ? "hidden" : ""}`}>
         <div className="flex flex-col items-center space-y-4">
           <div className="relative w-[200px] h-[280px]">
-            <Image
+            <img
               src={imageUrl || "/placeholder.png"}
               alt={cleanTitle}
-              fill
-              className="object-cover rounded-lg"
+              className="w-[200px] h-[280px] object-cover rounded-lg"
             />
           </div>
           <h3 className="text-text-primary font-bold text-center line-clamp-2">

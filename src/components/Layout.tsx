@@ -1,21 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 
 interface LayoutProps {
   children: React.ReactNode;
   activeTab: string;
   setActiveTab: (tab: string) => void;
 }
-
-const navItems = [
-  { id: "available", label: "Available" },
-  { id: "schedule", label: "Schedule" },
-  { id: "tracked", label: "Tracked" },
-  { id: "downloads", label: "Downloads" },
-  { id: "settings", label: "Settings" },
-];
 
 export default function Layout({
   children,
@@ -24,77 +15,79 @@ export default function Layout({
 }: LayoutProps) {
   const [searchQuery, setSearchQuery] = useState("");
 
-  const handleSearch = async () => {
-    try {
-      // TODO: Implement search functionality using Tauri
-      await invoke("search_anime", { query: searchQuery });
-    } catch (error) {
-      console.error("Search failed:", error);
-    }
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    // TODO: Implement search functionality
   };
 
   return (
     <div className="min-h-screen bg-background">
       {/* Navigation Bar */}
-      <nav className="bg-surface border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
+      <nav className="bg-white border-b border-gray-200">
+        <div className="container mx-auto px-5 py-3">
+          <div className="flex items-center space-x-8">
             {/* Logo */}
-            <div className="text-2xl font-bold text-text-primary">ANICHAIN</div>
+            <h1 className="text-2xl font-bold text-text-primary">ANICHAIN</h1>
 
             {/* Navigation Buttons */}
-            <div className="hidden md:flex space-x-4">
-              {navItems.map((item) => (
+            <div className="flex space-x-4">
+              {[
+                "Available",
+                "Schedule",
+                "Tracked",
+                "Downloads",
+                "Settings",
+              ].map((tab) => (
                 <button
-                  key={item.id}
-                  onClick={() => setActiveTab(item.id)}
-                  className={`nav-button ${
-                    activeTab === item.id ? "nav-button-active" : ""
+                  key={tab}
+                  onClick={() => setActiveTab(tab.toLowerCase())}
+                  className={`px-4 py-2 text-sm font-medium transition-colors ${
+                    activeTab === tab.toLowerCase()
+                      ? "text-primary font-bold"
+                      : "text-gray-600 hover:text-gray-900"
                   }`}
                 >
-                  {item.label}
+                  {tab}
                 </button>
               ))}
             </div>
 
             {/* Search Bar */}
-            <div className="flex items-center bg-background rounded-full px-4 py-2">
-              <input
-                type="text"
-                placeholder="Search anime"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="bg-transparent border-none outline-none text-text-primary placeholder-text-secondary"
-                onKeyPress={(e) => e.key === "Enter" && handleSearch()}
-              />
-              <button
-                onClick={handleSearch}
-                className="ml-2 px-4 py-2 bg-primary text-white rounded-full text-sm hover:bg-blue-600 transition-colors"
-              >
-                Search
-              </button>
+            <div className="flex-grow">
+              <form onSubmit={handleSearch} className="flex items-center">
+                <div className="flex-grow relative">
+                  <div className="flex items-center bg-gray-50 rounded-l-full rounded-r-full">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search anime"
+                      className="w-full py-2 px-4 bg-transparent border-none focus:outline-none text-sm"
+                    />
+                    <button
+                      type="submit"
+                      className="ml-2 px-6 py-2 bg-primary text-white rounded-full text-sm font-medium hover:bg-blue-600 transition-colors"
+                    >
+                      Search
+                    </button>
+                  </div>
+                </div>
+              </form>
             </div>
           </div>
         </div>
       </nav>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {children}
-      </main>
+      <div className="container mx-auto px-5 py-6">{children}</div>
 
       {/* Status Bar */}
-      <div className="fixed bottom-0 left-0 right-0 h-8 bg-surface border-t border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-full flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <span className="text-secondary">●</span>
-            <span className="text-sm text-text-secondary">
-              qBittorrent Connected
-            </span>
-          </div>
-          <button className="text-sm text-primary hover:text-blue-600 transition-colors">
-            Reconnect
-          </button>
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-5 py-2">
+        <div className="container mx-auto flex items-center space-x-2">
+          <span className="text-green-500 text-lg">●</span>
+          <span className="text-sm font-medium text-green-500">
+            qBittorrent Connected
+          </span>
         </div>
       </div>
     </div>

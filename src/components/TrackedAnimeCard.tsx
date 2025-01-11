@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import Image from "next/image";
-import { invoke } from "@tauri-apps/api/core";
 
 interface TrackedAnimeCardProps {
   seriesName: string;
@@ -22,54 +20,39 @@ export default function TrackedAnimeCard({
   onUntrack,
 }: TrackedAnimeCardProps) {
   const [isFlipped, setIsFlipped] = useState(false);
-  const [status, setStatus] = useState<AnimeStatus>({
+  const [status] = useState<AnimeStatus>({
     status: "Ongoing",
     lastEpisode: "None",
   });
   const [countdown, setCountdown] = useState<string>("");
 
   useEffect(() => {
-    loadStatus();
-    const timer = setInterval(updateCountdown, 60000); // Update every minute
-    return () => clearInterval(timer);
-  }, []);
+    if (status.nextEpisodeTime) {
+      const timer = setInterval(() => {
+        const now = new Date();
+        const diff = status.nextEpisodeTime!.getTime() - now.getTime();
 
-  const loadStatus = async () => {
-    try {
-      const animeStatus = await invoke<AnimeStatus>("get_anime_status", {
-        seriesName,
-      });
-      setStatus(animeStatus);
-    } catch (error) {
-      console.error("Failed to load status:", error);
+        if (diff <= 0) {
+          setCountdown("Episode available now!");
+          clearInterval(timer);
+        } else {
+          const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+          const hours = Math.floor(
+            (diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)
+          );
+          const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+
+          let countdownText = "Next episode in: ";
+          if (days > 0) countdownText += `${days}d `;
+          countdownText += `${hours}h ${minutes}m`;
+
+          setCountdown(countdownText);
+        }
+      }, 60000); // Update every minute
+
+      return () => clearInterval(timer);
     }
-  };
-
-  const updateCountdown = () => {
-    if (!status.nextEpisodeTime) {
-      setCountdown("No scheduled episodes");
-      return;
-    }
-
-    const now = new Date();
-    const next = new Date(status.nextEpisodeTime);
-    const diff = next.getTime() - now.getTime();
-
-    if (diff <= 0) {
-      setCountdown("Episode available now!");
-      return;
-    }
-
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-
-    let countdownText = "Next episode in: ";
-    if (days > 0) countdownText += `${days}d `;
-    countdownText += `${hours}h ${minutes}m`;
-
-    setCountdown(countdownText);
-  };
+  }, [status.nextEpisodeTime]);
 
   return (
     <div
@@ -82,11 +65,10 @@ export default function TrackedAnimeCard({
       <div className={`absolute w-full h-full ${isFlipped ? "hidden" : ""}`}>
         <div className="flex flex-col items-center space-y-4">
           <div className="relative w-[200px] h-[280px]">
-            <Image
+            <img
               src={imageUrl || "/placeholder.png"}
               alt={seriesName}
-              fill
-              className="object-cover rounded-lg"
+              className="w-[200px] h-[280px] object-cover rounded-lg"
             />
           </div>
           <h3 className="text-text-primary font-bold text-center line-clamp-2">

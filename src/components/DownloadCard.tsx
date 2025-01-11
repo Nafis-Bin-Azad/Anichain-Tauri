@@ -1,8 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import Image from "next/image";
-import { invoke } from "@tauri-apps/api/core";
+import { useState } from "react";
 
 interface DownloadCardProps {
   filename: string;
@@ -21,37 +19,11 @@ export default function DownloadCard({
   onDelete,
 }: DownloadCardProps) {
   const [isFlipped, setIsFlipped] = useState(false);
-  const [status, setStatus] = useState<TorrentStatus>({
+  const [status] = useState<TorrentStatus>({
     progress: 0,
     isDownloading: false,
   });
-  const [fileSize, setFileSize] = useState<string>("");
-
-  useEffect(() => {
-    loadFileInfo();
-    const timer = setInterval(updateProgress, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const loadFileInfo = async () => {
-    try {
-      const size = await invoke<number>("get_file_size", { filename });
-      setFileSize(`${(size / (1024 * 1024)).toFixed(1)} MB`);
-    } catch (error) {
-      console.error("Failed to load file info:", error);
-    }
-  };
-
-  const updateProgress = async () => {
-    try {
-      const torrentStatus = await invoke<TorrentStatus>("get_torrent_status", {
-        filename,
-      });
-      setStatus(torrentStatus);
-    } catch (error) {
-      console.error("Failed to update progress:", error);
-    }
-  };
+  const [fileSize] = useState<string>("");
 
   const cleanTitle = filename
     .replace("[SubsPlease]", "")
@@ -68,11 +40,10 @@ export default function DownloadCard({
       <div className={`absolute w-full h-full ${isFlipped ? "hidden" : ""}`}>
         <div className="flex flex-col items-center space-y-4">
           <div className="relative w-[200px] h-[280px]">
-            <Image
+            <img
               src={imageUrl || "/placeholder.png"}
               alt={cleanTitle}
-              fill
-              className="object-cover rounded-lg"
+              className="w-[200px] h-[280px] object-cover rounded-lg"
             />
           </div>
           <h3 className="text-text-primary font-bold text-center line-clamp-2">

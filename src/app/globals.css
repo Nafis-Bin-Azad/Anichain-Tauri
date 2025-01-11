@@ -3,62 +3,49 @@
 @tailwind utilities;
 
 :root {
+  --primary: #007aff;
+  --secondary: #00b894;
+  --danger: #ff3b30;
+  --success: #00b894;
   --background: #f5f5f7;
-  --foreground: #333333;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --surface: #ffffff;
+  --text-primary: #333333;
+  --text-secondary: #666666;
 }
 
 @layer base {
-  html,
   body {
-    @apply max-w-full overflow-x-hidden;
-  }
-
-  body {
-    @apply text-text-primary bg-background font-sans antialiased;
+    @apply bg-background text-text-primary;
   }
 }
 
 @layer components {
-  .nav-button {
-    @apply text-text-secondary border-none px-4 py-2 text-sm bg-transparent hover:text-text-primary;
-  }
-
-  .nav-button-active {
-    @apply text-primary font-bold;
-  }
-
   .card {
-    @apply bg-surface rounded-lg border border-gray-200 p-4 hover:border-primary transition-colors;
+    @apply bg-surface rounded-lg border border-gray-200 overflow-hidden shadow-sm;
   }
 
   .progress-bar {
-    @apply w-full h-2 bg-gray-100 rounded-full overflow-hidden;
+    @apply w-full h-2 bg-gray-200 rounded-full overflow-hidden;
   }
 
   .progress-bar-fill {
-    @apply h-full bg-primary rounded-full transition-all duration-300;
+    @apply h-full bg-primary transition-all duration-500 rounded-full;
   }
 }
 
-* {
-  box-sizing: border-box;
-  padding: 0;
-  margin: 0;
+/* Card Flip Animation */
+.preserve-3d {
+  transform-style: preserve-3d;
 }
 
-a {
-  @apply text-inherit no-underline;
+.backface-hidden {
+  backface-visibility: hidden;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+.perspective {
+  perspective: 1000px;
+}
+
+.rotate-y-180 {
+  transform: rotateY(180deg);
 }
