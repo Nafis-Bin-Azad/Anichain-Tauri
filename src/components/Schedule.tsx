@@ -1,62 +1,149 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 
-interface ScheduleItem {
+interface ScheduleEntry {
   title: string;
   time: string;
+  episode: number;
+  air_date: string;
+  day: string;
 }
 
 interface ScheduleData {
-  [key: string]: ScheduleItem[];
+  [key: string]: ScheduleEntry[];
 }
 
 export default function Schedule() {
   const [currentTime, setCurrentTime] = useState<string>("");
   const [nextAnime, setNextAnime] = useState<string>("");
-  const [schedule, setSchedule] = useState<ScheduleData>({
-    Monday: [
-      { title: "Jujutsu Kaisen Season 2", time: "17:00" },
-      { title: "Solo Leveling", time: "18:30" },
-    ],
-    Tuesday: [{ title: "Demon Slayer", time: "17:00" }],
-    // Add more days as needed
-  });
+  const [schedule, setSchedule] = useState<ScheduleData>({});
 
   useEffect(() => {
-    // Update clock every second
+    // Fetch schedule data
+    const fetchSchedule = async () => {
+      console.log("Fetching schedule data...");
+      try {
+        const entries: ScheduleEntry[] = await invoke("get_schedule");
+        console.log("Raw schedule entries:", entries);
+
+        // Group entries by day
+        const groupedSchedule: ScheduleData = {};
+        const days = [
+          "Sunday",
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday",
+          "Saturday",
+        ];
+
+        // Get current UTC time
+        const now = new Date();
+        let nextAnimeFound = false;
+
+        entries.forEach((entry) => {
+          const day = entry.day.charAt(0).toUpperCase() + entry.day.slice(1);
+          const date = new Date(entry.air_date);
+
+          if (!groupedSchedule[day]) {
+            groupedSchedule[day] = [];
+          }
+
+          // Format the time in local timezone
+          const localTime = date.toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+            hour12: false,
+          });
+
+          const showEntry = {
+            ...entry,
+            time: localTime,
+          };
+
+          groupedSchedule[day].push(showEntry);
+
+          // Check if this is the next anime to air
+          if (!nextAnimeFound && date > now) {
+            const timeUntil = date.getTime() - now.getTime();
+            const hours = Math.floor(timeUntil / (1000 * 60 * 60));
+            const minutes = Math.floor(
+              (timeUntil % (1000 * 60 * 60)) / (1000 * 60)
+            );
+
+            setNextAnime(
+              `Next Episode: ${entry.title} at ${localTime} (in ${hours}h ${minutes}m)`
+            );
+            nextAnimeFound = true;
+          }
+        });
+
+        // Sort shows within each day by time
+        Object.keys(groupedSchedule).forEach((day) => {
+          groupedSchedule[day].sort((a, b) => {
+            return (
+              new Date(a.air_date).getTime() - new Date(b.air_date).getTime()
+            );
+          });
+        });
+
+        console.log("Final grouped schedule:", groupedSchedule);
+        setSchedule(groupedSchedule);
+      } catch (error) {
+        console.error("Failed to fetch schedule:", error);
+        console.error("Error details:", error);
+      }
+    };
+
+    console.log("Setting up schedule refresh...");
+    // Update clock and schedule every minute
     const timer = setInterval(() => {
       const now = new Date();
+      console.log("Updating time:", now);
       setCurrentTime(now.toUTCString());
       updateNextAnime(now);
-    }, 1000);
+      fetchSchedule(); // Refresh schedule data
+    }, 60000); // Every minute
 
-    return () => clearInterval(timer);
+    // Initial fetch
+    fetchSchedule();
+    setCurrentTime(new Date().toUTCString());
+
+    return () => {
+      console.log("Cleaning up schedule component");
+      clearInterval(timer);
+    };
   }, []);
 
   const updateNextAnime = (now: Date) => {
-    let nextShow: { title: string; time: Date } | null = null;
+    let nextShow: ScheduleEntry | null = null;
+    let earliestTime = Infinity;
 
-    Object.entries(schedule).forEach(([day, shows]) => {
+    Object.values(schedule).forEach((shows) => {
       shows.forEach((show) => {
-        const [hours, minutes] = show.time.split(":").map(Number);
-        const showTime = new Date(now);
-        showTime.setUTCHours(hours, minutes, 0, 0);
+        const airDate = new Date(show.air_date);
+        const timeDiff = airDate.getTime() - now.getTime();
 
-        if (showTime > now && (!nextShow || showTime < nextShow.time)) {
-          nextShow = { title: show.title, time: showTime };
+        if (timeDiff > 0 && timeDiff < earliestTime) {
+          earliestTime = timeDiff;
+          nextShow = show;
         }
       });
     });
 
     if (nextShow) {
-      const timeUntil = nextShow.time.getTime() - now.getTime();
+      const airDate = new Date(nextShow.air_date);
+      const timeUntil = airDate.getTime() - now.getTime();
       const hours = Math.floor(timeUntil / (1000 * 60 * 60));
       const minutes = Math.floor((timeUntil % (1000 * 60 * 60)) / (1000 * 60));
+
       setNextAnime(
         `Next Episode: ${
           nextShow.title
-        } at ${nextShow.time.toUTCString()} (in ${hours}h ${minutes}m)`
+        } at ${airDate.toLocaleTimeString()} (in ${hours}h ${minutes}m)`
       );
     }
   };

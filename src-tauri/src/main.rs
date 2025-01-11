@@ -5,7 +5,7 @@ mod qbittorrent;
 mod anime;
 
 use qbittorrent::{QBittorrentClient, QBittorrentConfig, TorrentInfo, RssRule, RssRuleInfo, RssArticle};
-use anime::{AnimeClient, AnimeInfo};
+use anime::{AnimeClient, AnimeInfo, ScheduleEntry};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, fs, path::PathBuf};
 use tokio::sync::Mutex;
@@ -236,6 +236,13 @@ async fn refresh_anime_list(state: State<'_, AppState>) -> Result<(), String> {
     state.anime_client.refresh_anime_list().await.map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_schedule(state: State<'_, AppState>) -> Result<Vec<ScheduleEntry>, String> {
+    state.anime_client.get_schedule()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() {
     let settings = load_settings();
@@ -274,6 +281,7 @@ async fn main() {
             save_qbittorrent_settings,
             get_available_anime,
             refresh_anime_list,
+            get_schedule,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

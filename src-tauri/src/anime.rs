@@ -6,6 +6,8 @@ use regex::Regex;
 use tokio::time::{sleep, Duration};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use chrono::{DateTime, Utc};
+use scraper::{Html, Selector};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AnimeMetadata {
@@ -34,6 +36,15 @@ pub struct AnimeInfo {
     pub latest_episode: Episode,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScheduleEntry {
+    pub title: String,
+    pub time: String,
+    pub episode: i32,
+    pub air_date: DateTime<Utc>,
+    pub day: String,
+}
+
 lazy_static! {
     static ref TITLE_REGEX: Regex = Regex::new(
         r"^\[SubsPlease\] (.+) - (\d+) \(1080p\)"
@@ -41,7 +52,7 @@ lazy_static! {
 }
 
 // Add this constant for the default image
-const DEFAULT_IMAGE_URL: &str = "https://placehold.co/225x319/png";
+const DEFAULT_IMAGE_URL: &str = "https://placehold.co/225x319/gray/white/png?text=IMAGE+NOT+AVAILABLE";
 
 pub struct AnimeClient {
     client: Client,
@@ -149,8 +160,6 @@ impl AnimeClient {
                             urlencoding::encode(&search_title)
                         );
 
-                        println!("Attempting search with: {}", search_title);
-
                         if let Ok(response) = background_client.get(&search_url).send().await {
                             if let Ok(data) = response.json::<serde_json::Value>().await {
                                 if let Some(results) = data.get("data") {
@@ -183,7 +192,6 @@ impl AnimeClient {
                                                 };
                                             }
                                             found_match = true;
-                                            println!("Found match using: {}", search_title);
                                             break;
                                         }
                                     }
@@ -201,7 +209,6 @@ impl AnimeClient {
                             list[i].metadata.status = String::from("Unknown");
                             list[i].metadata.image_url = DEFAULT_IMAGE_URL.to_string();
                         }
-                        println!("No matches found for: {}", anime_info.series_name);
                     }
                     
                     last_request = std::time::Instant::now();
@@ -210,6 +217,62 @@ impl AnimeClient {
         });
 
         Ok(())
+    }
+
+    pub async fn get_schedule(&self) -> Result<Vec<ScheduleEntry>> {
+        let schedule_url = "https://subsplease.org/api/?f=schedule&tz=UTC";
+        
+        let response = self.client.get(schedule_url)
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+            .header("Accept", "application/json")
+            .send()
+            .await?;
+        
+        println!("Schedule API response status: {}", response.status());
+        
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("Failed to fetch schedule API"));
+        }
+        
+        let text = response.text().await?;
+        println!("API Response: {}", text);
+        
+        #[derive(Debug, Serialize, Deserialize)]
+        struct ApiResponse {
+            schedule: std::collections::HashMap<String, Vec<ApiShow>>,
+        }
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct ApiShow {
+            title: String,
+            time: String,
+            #[serde(default)]
+            episode: Option<i32>,
+        }
+
+        let api_response: ApiResponse = serde_json::from_str(&text)?;
+        let mut schedule = Vec::new();
+        
+        // Process each day's schedule
+        for (day, shows) in api_response.schedule.iter() {
+            for show in shows {
+                if !show.title.is_empty() && !show.time.is_empty() {
+                    if let Ok(air_date) = parse_schedule_time(&show.time) {
+                        schedule.push(ScheduleEntry {
+                            title: show.title.clone(),
+                            time: show.time.clone(),
+                            episode: show.episode.unwrap_or(0),
+                            air_date,
+                            day: day.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        
+        println!("Total schedule entries found: {}", schedule.len());
+        schedule.sort_by(|a, b| a.air_date.cmp(&b.air_date));
+        Ok(schedule)
     }
 
     fn parse_title(&self, title: &str) -> Option<AnimeNameInfo> {
@@ -238,7 +301,6 @@ impl AnimeNameInfo {
             .trim()
             .to_string();
 
-        println!("Search title: '{}'", search_title);
         search_title
     }
 
@@ -253,8 +315,34 @@ impl AnimeNameInfo {
             .to_string();
 
         if title != self.series_name {
-            println!("Alternative title: '{}'", title);
+            // Alternative title: '{}', title
         }
         title
     }
+}
+
+// Helper function to parse schedule time
+fn parse_schedule_time(time_str: &str) -> Result<DateTime<Utc>> {
+    let now = Utc::now();
+    let today = now.date_naive();
+    
+    let time_parts: Vec<&str> = time_str.trim().split(':').collect();
+    if time_parts.len() != 2 {
+        return Err(anyhow::anyhow!("Invalid time format: {}", time_str));
+    }
+    
+    let hour: i32 = time_parts[0].trim().parse()?;
+    let minute: i32 = time_parts[1].trim().parse()?;
+    
+    // Handle potential 24+ hour format
+    let adjusted_hour = hour % 24;
+    
+    let schedule_time = today.and_hms_opt(adjusted_hour as u32, minute as u32, 0)
+        .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", adjusted_hour, minute))?;
+    
+    // Convert from JST to UTC
+    let jst_offset = chrono::Duration::hours(9);
+    let utc_time = DateTime::<Utc>::from_naive_utc_and_offset(schedule_time, Utc) - jst_offset;
+    
+    Ok(utc_time)
 } 
