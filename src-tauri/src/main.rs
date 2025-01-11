@@ -24,10 +24,10 @@ impl Default for Settings {
     }
 }
 
-struct AppState {
-    qb_client: Arc<QBittorrentClient>,
-    settings: Arc<Mutex<Settings>>,
-    anime_client: Arc<AnimeClient>,
+pub struct AppState {
+    pub qb_client: Arc<Mutex<QBittorrentClient>>,
+    pub anime_client: Arc<AnimeClient>,
+    pub settings: Arc<Mutex<Settings>>,
 }
 
 fn get_config_dir() -> PathBuf {
@@ -70,7 +70,7 @@ async fn save_qbittorrent_settings(
     config: QBittorrentConfig,
 ) -> Result<(), String> {
     // Try to connect first
-    state.qb_client.connect(config.clone()).await.map_err(|e| e.to_string())?;
+    state.qb_client.lock().await.connect(config.clone()).await.map_err(|e| e.to_string())?;
     
     // If connection successful, save settings
     let mut settings = state.settings.lock().await;
@@ -95,6 +95,8 @@ async fn connect_qbittorrent(
 
     state
         .qb_client
+        .lock()
+        .await
         .connect(config)
         .await
         .map_err(|e| e.to_string())
@@ -102,13 +104,15 @@ async fn connect_qbittorrent(
 
 #[tauri::command]
 async fn check_qbittorrent_connection(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.qb_client.is_connected().await)
+    Ok(state.qb_client.lock().await.is_connected().await)
 }
 
 #[tauri::command]
 async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentInfo>, String> {
     state
         .qb_client
+        .lock()
+        .await
         .get_torrents()
         .await
         .map_err(|e| e.to_string())
@@ -118,6 +122,8 @@ async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentInfo>, St
 async fn add_torrent(state: State<'_, AppState>, magnet_url: String) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .add_torrent(&magnet_url)
         .await
         .map_err(|e| e.to_string())
@@ -131,6 +137,8 @@ async fn remove_torrent(
 ) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .remove_torrent(&hash, delete_files)
         .await
         .map_err(|e| e.to_string())
@@ -140,6 +148,8 @@ async fn remove_torrent(
 async fn pause_torrent(state: State<'_, AppState>, hash: String) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .pause_torrent(&hash)
         .await
         .map_err(|e| e.to_string())
@@ -149,6 +159,8 @@ async fn pause_torrent(state: State<'_, AppState>, hash: String) -> Result<(), S
 async fn resume_torrent(state: State<'_, AppState>, hash: String) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .resume_torrent(&hash)
         .await
         .map_err(|e| e.to_string())
@@ -159,6 +171,8 @@ async fn resume_torrent(state: State<'_, AppState>, hash: String) -> Result<(), 
 async fn add_rss_feed(state: State<'_, AppState>, url: String) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .add_rss_feed(&url)
         .await
         .map_err(|e| e.to_string())
@@ -168,6 +182,8 @@ async fn add_rss_feed(state: State<'_, AppState>, url: String) -> Result<(), Str
 async fn get_rss_rules(state: State<'_, AppState>) -> Result<Vec<RssRule>, String> {
     state
         .qb_client
+        .lock()
+        .await
         .get_rss_rules()
         .await
         .map_err(|e| e.to_string())
@@ -181,6 +197,8 @@ async fn add_rss_rule(
 ) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .add_rss_rule(&rule_name, rule_def)
         .await
         .map_err(|e| e.to_string())
@@ -190,6 +208,8 @@ async fn add_rss_rule(
 async fn remove_rss_rule(state: State<'_, AppState>, rule_name: String) -> Result<(), String> {
     state
         .qb_client
+        .lock()
+        .await
         .remove_rss_rule(&rule_name)
         .await
         .map_err(|e| e.to_string())
@@ -199,6 +219,8 @@ async fn remove_rss_rule(state: State<'_, AppState>, rule_name: String) -> Resul
 async fn get_rss_items(state: State<'_, AppState>, feed_url: String) -> Result<Vec<RssArticle>, String> {
     state
         .qb_client
+        .lock()
+        .await
         .get_rss_items(&feed_url)
         .await
         .map_err(|e| e.to_string())
@@ -206,24 +228,25 @@ async fn get_rss_items(state: State<'_, AppState>, feed_url: String) -> Result<V
 
 #[tauri::command]
 async fn get_available_anime(state: State<'_, AppState>) -> Result<Vec<AnimeInfo>, String> {
-    state
-        .anime_client
-        .get_available_anime()
-        .await
-        .map_err(|e| e.to_string())
+    state.anime_client.get_available_anime().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn refresh_anime_list(state: State<'_, AppState>) -> Result<(), String> {
+    state.anime_client.refresh_anime_list().await.map_err(|e| e.to_string())
 }
 
 #[tokio::main]
 async fn main() {
     let settings = load_settings();
-    let qb_client = Arc::new(QBittorrentClient::new());
+    let qb_client = Arc::new(Mutex::new(QBittorrentClient::new()));
     let anime_client = Arc::new(AnimeClient::new());
     
     // Try to connect if we have saved settings
     if let Some(config) = &settings.qbittorrent {
         let qb_client = qb_client.clone();
         let config = config.clone();
-        let _ = qb_client.connect(config).await;
+        let _ = qb_client.lock().await.connect(config).await;
     }
     
     let app_state = AppState {
@@ -250,6 +273,7 @@ async fn main() {
             get_settings,
             save_qbittorrent_settings,
             get_available_anime,
+            refresh_anime_list,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
