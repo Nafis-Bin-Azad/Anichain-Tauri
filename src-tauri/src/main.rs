@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, fs, path::PathBuf};
 use tokio::sync::Mutex;
 use tauri::State;
+use tracing::Level;
+use tracing_subscriber::FmtSubscriber;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Settings {
@@ -245,6 +247,18 @@ async fn get_schedule(state: State<'_, AppState>) -> Result<Vec<ScheduleEntry>, 
 
 #[tokio::main]
 async fn main() {
+    // Initialize the logging subscriber and ignore the return value with _
+    let _ = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_ansi(true)
+        .compact()
+        .init();
+
     let settings = load_settings();
     let qb_client = Arc::new(Mutex::new(QBittorrentClient::new()));
     let anime_client = Arc::new(AnimeClient::new());

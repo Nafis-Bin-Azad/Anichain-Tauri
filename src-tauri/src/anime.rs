@@ -7,7 +7,7 @@ use tokio::time::{sleep, Duration};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use chrono::{DateTime, Utc};
-use scraper::{Html, Selector};
+use tracing::{info, error};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AnimeMetadata {
@@ -222,20 +222,19 @@ impl AnimeClient {
     pub async fn get_schedule(&self) -> Result<Vec<ScheduleEntry>> {
         let schedule_url = "https://subsplease.org/api/?f=schedule&tz=UTC";
         
+        info!("Fetching schedule from SubsPlease API");
         let response = self.client.get(schedule_url)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
             .header("Accept", "application/json")
             .send()
             .await?;
         
-        println!("Schedule API response status: {}", response.status());
-        
         if !response.status().is_success() {
+            error!("Failed to fetch schedule: {}", response.status());
             return Err(anyhow::anyhow!("Failed to fetch schedule API"));
         }
         
         let text = response.text().await?;
-        println!("API Response: {}", text);
         
         #[derive(Debug, Serialize, Deserialize)]
         struct ApiResponse {
@@ -270,7 +269,7 @@ impl AnimeClient {
             }
         }
         
-        println!("Total schedule entries found: {}", schedule.len());
+        info!("Successfully fetched {} schedule entries", schedule.len());
         schedule.sort_by(|a, b| a.air_date.cmp(&b.air_date));
         Ok(schedule)
     }
