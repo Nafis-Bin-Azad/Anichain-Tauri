@@ -2,9 +2,7 @@
 
 import { useState } from "react";
 import Layout from "@/components/Layout";
-import AnimeCard from "@/components/AnimeCard";
-import TrackedAnimeCard from "@/components/TrackedAnimeCard";
-import DownloadCard from "@/components/DownloadCard";
+import Card from "@/components/Card";
 import Schedule from "@/components/Schedule";
 import Settings from "@/components/Settings";
 import { mockAnimeList, mockDownloads } from "@/lib/mockData";
@@ -42,10 +40,11 @@ export default function Home() {
     switch (activeTab) {
       case "available":
         return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 auto-rows-fr">
             {mockAnimeList.map((anime) => (
-              <AnimeCard
+              <Card
                 key={anime.title}
+                type="available"
                 title={anime.title}
                 episodeInfo={anime.episodeInfo}
                 imageUrl={anime.imageUrl}
@@ -58,13 +57,15 @@ export default function Home() {
 
       case "tracked":
         return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 auto-rows-fr">
             {mockAnimeList
               .filter((anime) => trackedAnime.has(anime.title))
               .map((anime) => (
-                <TrackedAnimeCard
+                <Card
                   key={anime.title}
-                  seriesName={anime.title}
+                  type="tracked"
+                  title={anime.title}
+                  episodeInfo={anime.episodeInfo}
                   imageUrl={anime.imageUrl}
                   onUntrack={() => handleUntrack(anime.title)}
                 />
@@ -74,11 +75,12 @@ export default function Home() {
 
       case "downloads":
         return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 auto-rows-fr">
             {downloads.map((download) => (
-              <DownloadCard
+              <Card
                 key={download.filename}
-                filename={download.filename}
+                type="download"
+                title={download.filename}
                 imageUrl={download.imageUrl}
                 onDelete={() => handleDeleteDownload(download.filename)}
               />
