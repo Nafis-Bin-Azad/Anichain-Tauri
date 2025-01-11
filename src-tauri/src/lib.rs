@@ -1,7 +1,14 @@
-pub mod commands;
-pub mod error;
-pub mod qbittorrent;
+use tauri::Builder;
 
-pub use commands::*;
-pub use error::*;
-pub use qbittorrent::*;
+pub fn run() {
+    Builder::default()
+        .invoke_handler(tauri::generate_handler![greet])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+#[tauri::command]
+fn greet(name: &str, email: &str) -> String {
+    println!("Inside rust code");
+    format!("Hello, {}! email: {}", name, email)
+}

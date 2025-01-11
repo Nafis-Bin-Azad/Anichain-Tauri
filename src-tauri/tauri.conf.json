@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "anichain",
+  "productName": "AniChain",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.anichain.dev",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
@@ -12,16 +12,15 @@
   "app": {
     "windows": [
       {
-        "title": "anichain",
+        "title": "Test-app",
         "width": 800,
         "height": 600,
         "resizable": true,
-        "fullscreen": false,
-        "label": "main"
+        "fullscreen": false
       }
     ],
     "security": {
-      "csp": "default-src 'self' subsplease.org api.jikan.moe; img-src 'self' data: https://subsplease.org https://api.jikan.moe; connect-src 'self' https://subsplease.org https://api.jikan.moe; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'"
+      "csp": null
     }
   },
   "bundle": {
