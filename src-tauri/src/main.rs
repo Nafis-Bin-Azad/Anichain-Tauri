@@ -2,8 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod qbittorrent;
+mod anime;
 
 use qbittorrent::{QBittorrentClient, QBittorrentConfig, TorrentInfo, RssRule, RssRuleInfo, RssArticle};
+use anime::{AnimeClient, AnimeInfo};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, fs, path::PathBuf};
 use tokio::sync::Mutex;
@@ -25,6 +27,7 @@ impl Default for Settings {
 struct AppState {
     qb_client: Arc<QBittorrentClient>,
     settings: Arc<Mutex<Settings>>,
+    anime_client: Arc<AnimeClient>,
 }
 
 fn get_config_dir() -> PathBuf {
@@ -201,22 +204,32 @@ async fn get_rss_items(state: State<'_, AppState>, feed_url: String) -> Result<V
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn get_available_anime(state: State<'_, AppState>) -> Result<Vec<AnimeInfo>, String> {
+    state
+        .anime_client
+        .get_available_anime()
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tokio::main]
 async fn main() {
     let settings = load_settings();
     let qb_client = Arc::new(QBittorrentClient::new());
+    let anime_client = Arc::new(AnimeClient::new());
     
     // Try to connect if we have saved settings
     if let Some(config) = &settings.qbittorrent {
         let qb_client = qb_client.clone();
         let config = config.clone();
-        // No need for tokio::spawn since we're already in an async context
         let _ = qb_client.connect(config).await;
     }
     
     let app_state = AppState {
         qb_client: qb_client.clone(),
         settings: Arc::new(Mutex::new(settings)),
+        anime_client: anime_client.clone(),
     };
 
     tauri::Builder::default()
@@ -236,6 +249,7 @@ async fn main() {
             get_rss_items,
             get_settings,
             save_qbittorrent_settings,
+            get_available_anime,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
