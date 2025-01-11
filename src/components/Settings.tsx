@@ -2,211 +2,162 @@
 
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+
+interface QBittorrentConfig {
+  url: string;
+  username: string;
+  password: string;
+}
 
 interface Settings {
-  downloadFolder: string;
-  rssUrl: string;
-  qbHost: string;
-  qbUsername: string;
-  qbPassword: string;
+  qbittorrent?: QBittorrentConfig;
 }
 
 export default function Settings() {
-  const [settings, setSettings] = useState<Settings>({
-    downloadFolder: "",
-    rssUrl: "",
-    qbHost: "",
-    qbUsername: "",
-    qbPassword: "",
+  const [isLoading, setIsLoading] = useState(true);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [config, setConfig] = useState<QBittorrentConfig>({
+    url: "",
+    username: "",
+    password: "",
   });
-  const [isSaving, setIsSaving] = useState(false);
-  const [message, setMessage] = useState<{
-    type: "success" | "error";
-    text: string;
-  } | null>(null);
 
   useEffect(() => {
     loadSettings();
+    checkConnection();
   }, []);
 
   const loadSettings = async () => {
     try {
-      const currentSettings = await invoke<Settings>("get_settings");
-      setSettings(currentSettings);
-    } catch (error) {
-      console.error("Failed to load settings:", error);
-      setMessage({
-        type: "error",
-        text: "Failed to load settings",
-      });
-    }
-  };
-
-  const handleBrowse = async () => {
-    try {
-      const selected = await open({
-        directory: true,
-        multiple: false,
-        defaultPath: settings.downloadFolder,
-      });
-      if (selected) {
-        setSettings((prev) => ({
-          ...prev,
-          downloadFolder: selected as string,
-        }));
+      const settings: Settings = await invoke("get_settings");
+      if (settings.qbittorrent) {
+        setConfig(settings.qbittorrent);
       }
-    } catch (error) {
-      console.error("Failed to select folder:", error);
+      setIsLoading(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load settings");
+      setIsLoading(false);
     }
   };
 
-  const handleSave = async () => {
-    setIsSaving(true);
+  const checkConnection = async () => {
     try {
-      await invoke("save_settings", { settings });
-      setMessage({
-        type: "success",
-        text: "Settings saved successfully",
-      });
-    } catch (error) {
-      console.error("Failed to save settings:", error);
-      setMessage({
-        type: "error",
-        text: "Failed to save settings",
-      });
+      const connected = await invoke("check_qbittorrent_connection");
+      setIsConnected(!!connected);
+    } catch (err) {
+      console.error("Connection check failed:", err);
+      setIsConnected(false);
     }
-    setIsSaving(false);
   };
+
+  const handleConnect = async () => {
+    setIsConnecting(true);
+    setError(null);
+    try {
+      await invoke("save_qbittorrent_settings", { config });
+      setIsConnected(true);
+    } catch (err) {
+      setError(err as string);
+      setIsConnected(false);
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    setConfig((prev) => ({ ...prev, [name]: value }));
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
 
   return (
-    <div className="bg-surface rounded-lg border border-gray-200 p-6 max-w-2xl mx-auto">
-      <h2 className="text-xl font-bold text-text-primary mb-6">Settings</h2>
+    <div className="p-6 max-w-2xl mx-auto">
+      <h2 className="text-2xl font-bold mb-6 text-text-primary">Settings</h2>
 
-      {message && (
-        <div
-          className={`mb-4 p-4 rounded ${
-            message.type === "success"
-              ? "bg-green-50 text-success"
-              : "bg-red-50 text-danger"
-          }`}
-        >
-          {message.text}
-        </div>
-      )}
+      <div className="bg-background-secondary rounded-lg p-6 shadow-lg">
+        <h3 className="text-xl font-semibold mb-4 text-text-primary">
+          qBittorrent Connection
+        </h3>
 
-      <div className="space-y-6">
-        {/* Download Folder */}
-        <div>
-          <label className="block text-text-primary font-medium mb-2">
-            Download Folder
-          </label>
-          <div className="flex gap-2">
+        <div className="space-y-4">
+          <div>
+            <label className="block text-text-primary font-medium mb-2">
+              Host
+            </label>
             <input
               type="text"
-              value={settings.downloadFolder}
-              onChange={(e) =>
-                setSettings((prev) => ({
-                  ...prev,
-                  downloadFolder: e.target.value,
-                }))
-              }
-              className="flex-grow px-4 py-2 rounded-md border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
+              name="url"
+              value={config.url}
+              onChange={handleInputChange}
+              placeholder="http://localhost:8080"
+              className="w-full px-4 py-2 rounded-lg bg-background-primary border border-border focus:outline-none focus:ring-2 focus:ring-primary text-text-primary"
             />
+          </div>
+
+          <div>
+            <label className="block text-text-primary font-medium mb-2">
+              Username
+            </label>
+            <input
+              type="text"
+              name="username"
+              value={config.username}
+              onChange={handleInputChange}
+              className="w-full px-4 py-2 rounded-lg bg-background-primary border border-border focus:outline-none focus:ring-2 focus:ring-primary text-text-primary"
+            />
+          </div>
+
+          <div>
+            <label className="block text-text-primary font-medium mb-2">
+              Password
+            </label>
+            <input
+              type="password"
+              name="password"
+              value={config.password}
+              onChange={handleInputChange}
+              className="w-full px-4 py-2 rounded-lg bg-background-primary border border-border focus:outline-none focus:ring-2 focus:ring-primary text-text-primary"
+            />
+          </div>
+
+          {error && <div className="text-red-500 text-sm mt-2">{error}</div>}
+
+          <div className="flex items-center justify-between mt-6">
             <button
-              onClick={handleBrowse}
-              className="px-4 py-2 bg-primary text-white rounded-md hover:bg-blue-600 transition-colors"
+              onClick={handleConnect}
+              disabled={isConnecting}
+              className="px-6 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
             >
-              Browse
+              {isConnecting ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  <span>Connecting...</span>
+                </>
+              ) : (
+                <span>Connect</span>
+              )}
             </button>
-          </div>
-        </div>
 
-        {/* RSS URL */}
-        <div>
-          <label className="block text-text-primary font-medium mb-2">
-            RSS URL
-          </label>
-          <input
-            type="text"
-            value={settings.rssUrl}
-            onChange={(e) =>
-              setSettings((prev) => ({ ...prev, rssUrl: e.target.value }))
-            }
-            className="w-full px-4 py-2 rounded-md border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-          />
-        </div>
-
-        {/* qBittorrent Settings */}
-        <div className="border-t border-gray-200 pt-6">
-          <h3 className="text-lg font-bold text-text-primary mb-4">
-            qBittorrent Settings
-          </h3>
-
-          <div className="space-y-4">
-            <div>
-              <label className="block text-text-primary font-medium mb-2">
-                Host
-              </label>
-              <input
-                type="text"
-                value={settings.qbHost}
-                onChange={(e) =>
-                  setSettings((prev) => ({ ...prev, qbHost: e.target.value }))
-                }
-                className="w-full px-4 py-2 rounded-md border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-text-primary font-medium mb-2">
-                Username
-              </label>
-              <input
-                type="text"
-                value={settings.qbUsername}
-                onChange={(e) =>
-                  setSettings((prev) => ({
-                    ...prev,
-                    qbUsername: e.target.value,
-                  }))
-                }
-                className="w-full px-4 py-2 rounded-md border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-text-primary font-medium mb-2">
-                Password
-              </label>
-              <input
-                type="password"
-                value={settings.qbPassword}
-                onChange={(e) =>
-                  setSettings((prev) => ({
-                    ...prev,
-                    qbPassword: e.target.value,
-                  }))
-                }
-                className="w-full px-4 py-2 rounded-md border border-gray-200 focus:border-primary focus:ring-1 focus:ring-primary outline-none"
-              />
+            <div className="flex items-center space-x-2">
+              <div
+                className={`w-3 h-3 rounded-full ${
+                  isConnected ? "bg-green-500" : "bg-red-500"
+                }`}
+              ></div>
+              <span className="text-text-secondary">
+                {isConnected ? "Connected" : "Not Connected"}
+              </span>
             </div>
           </div>
-        </div>
-
-        {/* Save Button */}
-        <div className="flex justify-end">
-          <button
-            onClick={handleSave}
-            disabled={isSaving}
-            className={`px-6 py-2 rounded-md text-white font-medium ${
-              isSaving
-                ? "bg-gray-400 cursor-not-allowed"
-                : "bg-primary hover:bg-blue-600"
-            } transition-colors`}
-          >
-            {isSaving ? "Saving..." : "Save Settings"}
-          </button>
         </div>
       </div>
     </div>
