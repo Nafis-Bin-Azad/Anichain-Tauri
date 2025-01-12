@@ -45,7 +45,7 @@ export default function Home() {
       // Create 12 placeholder cards immediately
       const placeholders = Array(12)
         .fill(null)
-        .map((_, index) => ({
+        .map(() => ({
           metadata: {
             title: "",
             image_url: "",
@@ -90,16 +90,29 @@ export default function Home() {
     }
   };
 
-  const handleTrackToggle = (title: string) => {
-    setTrackedAnime((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(title)) {
-        newSet.delete(title);
-      } else {
-        newSet.add(title);
+  const handleTrackToggle = async (title: string, anime: AnimeInfo) => {
+    try {
+      if (!trackedAnime.has(title)) {
+        // Add to tracking and qBittorrent
+        await invoke("track_anime", {
+          title,
+          magnetUrl: anime.latest_episode.magnet_url,
+        });
       }
-      return newSet;
-    });
+
+      setTrackedAnime((prev) => {
+        const newSet = new Set(prev);
+        if (newSet.has(title)) {
+          newSet.delete(title);
+        } else {
+          newSet.add(title);
+        }
+        return newSet;
+      });
+    } catch (error) {
+      console.error("Failed to track anime:", error);
+      // You might want to show an error message to the user here
+    }
   };
 
   const handleUntrack = (title: string) => {
@@ -131,11 +144,14 @@ export default function Home() {
                 }
                 imageUrl={anime.metadata.image_url || null}
                 isTracked={trackedAnime.has(anime.metadata.title)}
-                onTrackToggle={() => handleTrackToggle(anime.metadata.title)}
+                onTrackToggle={() =>
+                  handleTrackToggle(anime.metadata.title, anime)
+                }
                 isLoading={
                   !anime.metadata.title ||
                   anime.metadata.status === "Loading..."
                 }
+                magnetUrl={anime.latest_episode.magnet_url}
               />
             ))}
           </div>

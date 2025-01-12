@@ -19,9 +19,9 @@ export default function Settings() {
   const [error, setError] = useState<string | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [config, setConfig] = useState<QBittorrentConfig>({
-    url: "",
-    username: "",
-    password: "",
+    url: "http://localhost:8080",
+    username: "nafislord",
+    password: "Saphire 1",
   });
 
   useEffect(() => {
@@ -56,8 +56,13 @@ export default function Settings() {
     setIsConnecting(true);
     setError(null);
     try {
-      await invoke("save_qbittorrent_settings", { config });
+      await invoke("connect_qbittorrent", {
+        url: config.url,
+        username: config.username,
+        password: config.password,
+      });
       setIsConnected(true);
+      await loadSettings();
     } catch (err) {
       setError(err as string);
       setIsConnected(false);

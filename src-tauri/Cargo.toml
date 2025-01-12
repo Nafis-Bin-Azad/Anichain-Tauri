@@ -36,4 +36,5 @@ urlencoding = "2.1"
 chrono = { version = "0.4", features = ["serde"] }
 scraper = "0.17"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros"] }

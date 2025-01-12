@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 
-interface CardSkeletonProps {}
+interface CardSkeletonProps {
+  className?: string;
+}
 
-function CardSkeleton({}: CardSkeletonProps) {
+export function CardSkeleton({}: CardSkeletonProps) {
   return (
     <div className="aspect-[2/3] w-full">
       <div className="relative h-full rounded-xl overflow-hidden bg-gray-100 animate-pulse">
@@ -27,9 +29,10 @@ interface CardProps {
   episodeInfo: string;
   imageUrl?: string | null;
   isTracked?: boolean;
-  onTrackToggle?: () => void;
+  onTrackToggle?: (magnetUrl?: string) => void;
   onUntrack?: () => void;
   isLoading?: boolean;
+  magnetUrl?: string;
 }
 
 export default function Card({
@@ -41,6 +44,7 @@ export default function Card({
   onTrackToggle,
   onUntrack,
   isLoading = false,
+  magnetUrl,
 }: CardProps) {
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -106,7 +110,7 @@ export default function Card({
             <button
               onClick={(e) => {
                 e.stopPropagation();
-                onTrackToggle?.();
+                onTrackToggle?.(magnetUrl);
               }}
               className={`mt-4 px-4 py-2 rounded-lg w-full ${
                 isTracked

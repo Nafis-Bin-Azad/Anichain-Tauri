@@ -3,83 +3,33 @@
 
 mod qbittorrent;
 mod anime;
+mod db;
 
-use qbittorrent::{QBittorrentClient, QBittorrentConfig, TorrentInfo, RssRule, RssRuleInfo, RssArticle};
+use qbittorrent::{QBittorrentClient, QBittorrentConfig};
 use anime::{AnimeClient, AnimeInfo, ScheduleEntry};
-use serde::{Deserialize, Serialize};
-use std::{sync::Arc, fs, path::PathBuf};
+use serde::Serialize;
+use std::sync::Arc;
 use tokio::sync::Mutex;
-use tauri::State;
+use tauri::{State, Manager, Emitter};
 use tracing::Level;
-use tracing_subscriber::FmtSubscriber;
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct Settings {
-    pub qbittorrent: Option<QBittorrentConfig>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            qbittorrent: None,
-        }
-    }
-}
+use sqlx::SqlitePool;
 
 pub struct AppState {
     pub qb_client: Arc<Mutex<QBittorrentClient>>,
     pub anime_client: Arc<AnimeClient>,
-    pub settings: Arc<Mutex<Settings>>,
+    pub tracked_anime: Arc<Mutex<std::collections::HashSet<String>>>,
+    pub db_pool: Arc<SqlitePool>,
 }
 
-fn get_config_dir() -> PathBuf {
-    if let Some(proj_dirs) = directories::ProjectDirs::from("com", "anichain", "anichain") {
-        proj_dirs.config_dir().to_path_buf()
-    } else {
-        PathBuf::from(".")
-    }
+#[derive(Debug, Serialize, Clone)]
+struct ConnectionStatus {
+    is_connected: bool,
+    error_message: Option<String>,
 }
 
-fn load_settings() -> Settings {
-    let config_dir = get_config_dir();
-    let settings_path = config_dir.join("settings.json");
-    if let Ok(contents) = fs::read_to_string(&settings_path) {
-        if let Ok(settings) = serde_json::from_str(&contents) {
-            return settings;
-        }
-    }
-    Settings::default()
-}
-
-fn save_settings(settings: &Settings) -> Result<(), String> {
-    let config_dir = get_config_dir();
-    fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    let settings_path = config_dir.join("settings.json");
-    let contents = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    fs::write(settings_path, contents).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
-    let settings = state.settings.lock().await;
-    Ok((*settings).clone())
-}
-
-#[tauri::command]
-async fn save_qbittorrent_settings(
-    state: State<'_, AppState>,
-    config: QBittorrentConfig,
-) -> Result<(), String> {
-    // Try to connect first
-    state.qb_client.lock().await.connect(config.clone()).await.map_err(|e| e.to_string())?;
-    
-    // If connection successful, save settings
-    let mut settings = state.settings.lock().await;
-    settings.qbittorrent = Some(config);
-    save_settings(&*settings)?;
-    
-    Ok(())
+#[derive(Debug, Serialize)]
+struct Settings {
+    qbittorrent: Option<QBittorrentConfig>,
 }
 
 #[tauri::command]
@@ -88,149 +38,72 @@ async fn connect_qbittorrent(
     url: String,
     username: String,
     password: String,
+    window: tauri::Window,
 ) -> Result<(), String> {
     let config = QBittorrentConfig {
-        url,
-        username,
-        password,
+        url: url.clone(),
+        username: username.clone(),
+        password: password.clone(),
     };
 
-    state
+    // Try to connect
+    let result = state
         .qb_client
         .lock()
         .await
-        .connect(config)
-        .await
-        .map_err(|e| e.to_string())
+        .connect(config.clone())
+        .await;
+
+    match result {
+        Ok(_) => {
+            // Save credentials to database
+            db::save_qbittorrent_config(&state.db_pool, &config)
+                .await
+                .map_err(|e| format!("Failed to save config: {}", e))?;
+
+            // Emit connection status
+            window.emit("qbittorrent-status", ConnectionStatus {
+                is_connected: true,
+                error_message: None,
+            }).map_err(|e| e.to_string())?;
+
+            Ok(())
+        }
+        Err(e) => {
+            let error_msg = format!("Failed to connect: {}", e);
+            tracing::error!("{}", error_msg);
+
+            // Emit connection status with error
+            window.emit("qbittorrent-status", ConnectionStatus {
+                is_connected: false,
+                error_message: Some(error_msg.clone()),
+            }).map_err(|e| e.to_string())?;
+
+            // Emit event to switch to settings tab
+            window.emit("switch-to-settings", ()).map_err(|e| e.to_string())?;
+
+            Err(error_msg)
+        }
+    }
 }
 
 #[tauri::command]
-async fn check_qbittorrent_connection(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.qb_client.lock().await.is_connected().await)
-}
-
-#[tauri::command]
-async fn get_torrents(state: State<'_, AppState>) -> Result<Vec<TorrentInfo>, String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .get_torrents()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn add_torrent(state: State<'_, AppState>, magnet_url: String) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .add_torrent(&magnet_url)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn remove_torrent(
+async fn check_qbittorrent_connection(
     state: State<'_, AppState>,
-    hash: String,
-    delete_files: bool,
-) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .remove_torrent(&hash, delete_files)
-        .await
-        .map_err(|e| e.to_string())
-}
+    window: tauri::Window,
+) -> Result<bool, String> {
+    let is_connected = state.qb_client.lock().await.is_connected().await;
+    
+    window.emit("qbittorrent-status", ConnectionStatus {
+        is_connected,
+        error_message: if !is_connected {
+            Some("Not connected to qBittorrent".to_string())
+        } else {
+            None
+        },
+    }).map_err(|e| e.to_string())?;
 
-#[tauri::command]
-async fn pause_torrent(state: State<'_, AppState>, hash: String) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .pause_torrent(&hash)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn resume_torrent(state: State<'_, AppState>, hash: String) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .resume_torrent(&hash)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-// RSS Commands
-#[tauri::command]
-async fn add_rss_feed(state: State<'_, AppState>, url: String) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .add_rss_feed(&url)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn get_rss_rules(state: State<'_, AppState>) -> Result<Vec<RssRule>, String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .get_rss_rules()
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn add_rss_rule(
-    state: State<'_, AppState>,
-    rule_name: String,
-    rule_def: RssRuleInfo,
-) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .add_rss_rule(&rule_name, rule_def)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn remove_rss_rule(state: State<'_, AppState>, rule_name: String) -> Result<(), String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .remove_rss_rule(&rule_name)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn get_rss_items(state: State<'_, AppState>, feed_url: String) -> Result<Vec<RssArticle>, String> {
-    state
-        .qb_client
-        .lock()
-        .await
-        .get_rss_items(&feed_url)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn get_available_anime(state: State<'_, AppState>) -> Result<Vec<AnimeInfo>, String> {
-    state.anime_client.get_available_anime().await.map_err(|e| e.to_string())
+    Ok(is_connected)
 }
 
 #[tauri::command]
@@ -239,64 +112,172 @@ async fn refresh_anime_list(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn get_available_anime(state: State<'_, AppState>) -> Result<Vec<AnimeInfo>, String> {
+    state.anime_client.get_available_anime().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn track_anime(
+    state: State<'_, AppState>,
+    title: String,
+    magnet_url: String,
+    window: tauri::Window,
+) -> Result<(), String> {
+    // Add to tracked anime set
+    {
+        let mut tracked = state.tracked_anime.lock().await;
+        tracked.insert(title.clone());
+    }
+
+    // Add to qBittorrent if connected
+    let qb_client = state.qb_client.lock().await;
+    if qb_client.is_connected().await {
+        if let Err(e) = qb_client.add_torrent(&magnet_url, Some("Anime")).await {
+            tracing::error!("Failed to add torrent to qBittorrent: {}", e);
+            return Err(format!("Failed to add torrent: {}", e));
+        }
+        tracing::info!("Successfully added torrent for: {}", title);
+    } else {
+        // If not connected, switch to settings tab
+        window.emit("switch-to-settings", ()).map_err(|e| e.to_string())?;
+        return Err("Not connected to qBittorrent".to_string());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn get_schedule(state: State<'_, AppState>) -> Result<Vec<ScheduleEntry>, String> {
-    state.anime_client.get_schedule()
+    state.anime_client.get_schedule().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    let config = db::get_qbittorrent_config(&state.db_pool)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("Failed to get settings: {}", e))?;
+    
+    Ok(Settings {
+        qbittorrent: config,
+    })
 }
 
 #[tokio::main]
-async fn main() {
-    // Initialize the logging subscriber and ignore the return value with _
-    let _ = FmtSubscriber::builder()
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_file(false)
         .with_line_number(false)
-        .with_ansi(true)
-        .compact()
+        .with_env_filter("info,hyper=warn,sqlx=warn")
         .init();
 
-    let settings = load_settings();
+    // Initialize database
+    let db_pool = db::init_db().await?;
+    let db_pool = Arc::new(db_pool);
+
     let qb_client = Arc::new(Mutex::new(QBittorrentClient::new()));
     let anime_client = Arc::new(AnimeClient::new());
     
-    // Try to connect if we have saved settings
-    if let Some(config) = &settings.qbittorrent {
-        let qb_client = qb_client.clone();
-        let config = config.clone();
-        let _ = qb_client.lock().await.connect(config).await;
+    // Try to connect if we have saved credentials
+    if let Ok(Some(config)) = db::get_qbittorrent_config(&db_pool).await {
+        tracing::info!("Found saved qBittorrent credentials, attempting to connect...");
+        let client = qb_client.lock().await;
+        match client.connect(config.clone()).await {
+            Ok(_) => {
+                tracing::info!("Successfully connected to qBittorrent using saved credentials");
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect with saved credentials: {}", e);
+            }
+        }
+    } else {
+        tracing::info!("No saved qBittorrent credentials found");
+        // Create default config
+        let default_config = QBittorrentConfig {
+            url: "http://127.0.0.1:8080".to_string(),
+            username: "nafislord".to_string(),
+            password: "Saphire 1".to_string(),
+        };
+        
+        // Try to connect with default config
+        tracing::info!("Attempting to connect with default credentials...");
+        let client = qb_client.lock().await;
+        match client.connect(default_config.clone()).await {
+            Ok(_) => {
+                tracing::info!("Successfully connected with default credentials");
+                // Save the successful config
+                if let Err(e) = db::save_qbittorrent_config(&db_pool, &default_config).await {
+                    tracing::error!("Failed to save default config: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to connect with default credentials: {}", e);
+            }
+        }
     }
     
     let app_state = AppState {
-        qb_client: qb_client.clone(),
-        settings: Arc::new(Mutex::new(settings)),
+        qb_client,
         anime_client: anime_client.clone(),
+        tracked_anime: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        db_pool,
     };
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             connect_qbittorrent,
             check_qbittorrent_connection,
-            get_torrents,
-            add_torrent,
-            remove_torrent,
-            pause_torrent,
-            resume_torrent,
-            add_rss_feed,
-            get_rss_rules,
-            add_rss_rule,
-            remove_rss_rule,
-            get_rss_items,
-            get_settings,
-            save_qbittorrent_settings,
-            get_available_anime,
             refresh_anime_list,
+            get_available_anime,
+            track_anime,
             get_schedule,
+            get_settings,
+            // ... other handlers ...
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .setup(|app| {
+            let window = app.get_webview_window("main").expect("main window not found");
+            let state = app.state::<AppState>();
+            
+            // Clone what we need for the async task
+            let window = window.clone();
+            let qb_client = state.qb_client.clone();
+            
+            // Spawn a task to check connection after window is ready
+            tauri::async_runtime::spawn(async move {
+                let is_connected = qb_client.lock().await.is_connected().await;
+                
+                if let Err(e) = window.emit("qbittorrent-status", ConnectionStatus {
+                    is_connected,
+                    error_message: if !is_connected {
+                        Some("Not connected to qBittorrent".to_string())
+                    } else {
+                        None
+                    },
+                }) {
+                    tracing::error!("Failed to emit initial connection status: {}", e);
+                }
+            });
+            
+            Ok(())
+        })
+        .build(tauri::generate_context!())?;
+
+    app.run(|_app_handle, event| match event {
+        tauri::RunEvent::WindowEvent { 
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } => {
+            api.prevent_close();
+            tracing::info!("Close requested for window {}", label);
+        }
+        _ => {}
+    });
+
+    Ok(())
 }
