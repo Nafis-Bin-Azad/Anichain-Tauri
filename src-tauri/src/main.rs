@@ -4,6 +4,8 @@
 mod qbittorrent;
 mod anime;
 mod db;
+mod anime_folder;
+mod hama;
 
 use qbittorrent::{QBittorrentClient, QBittorrentConfig};
 use anime::{AnimeClient, AnimeInfo, ScheduleEntry};
@@ -13,6 +15,7 @@ use tokio::sync::Mutex;
 use tauri::{State, Manager, Emitter};
 use tracing::Level;
 use sqlx::SqlitePool;
+use std::path::Path;
 
 pub struct AppState {
     pub qb_client: Arc<Mutex<QBittorrentClient>>,
@@ -139,38 +142,86 @@ async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
 
 #[tauri::command]
 async fn get_download_folder(state: State<'_, AppState>) -> Result<String, String> {
+    tracing::info!("=== Retrieving Download Folder ===");
     let client = state.qb_client.lock().await;
-    client
-        .get_download_folder()
-        .await
-        .map_err(|e| format!("Failed to get download folder: {}", e))
+    match client.get_download_folder().await {
+        Ok(folder) => {
+            tracing::info!("Current download folder path: {}", folder);
+            Ok(folder)
+        }
+        Err(e) => {
+            tracing::error!("Failed to get download folder: {}", e);
+            Err(format!("Failed to get download folder: {}", e))
+        }
+    }
 }
 
 #[tauri::command]
 async fn set_download_folder(
     state: State<'_, AppState>,
     folder: String,
+    window: tauri::Window,
 ) -> Result<(), String> {
+    tracing::info!("=== Setting Download Folder ===");
+    tracing::info!("Requested new download folder: {}", folder);
+    
     let client = state.qb_client.lock().await;
-    client
-        .set_download_folder(folder)
-        .await
-        .map_err(|e| format!("Failed to set download folder: {}", e))
+    
+    // Get current folder for logging
+    if let Ok(current_folder) = client.get_download_folder().await {
+        tracing::info!("Current download folder: {}", current_folder);
+    }
+    
+    match client.set_download_folder(folder.clone()).await {
+        Ok(_) => {
+            tracing::info!("Successfully updated download folder to: {}", folder);
+            
+            // Get the current config to update
+            match db::get_qbittorrent_config(&state.db_pool).await {
+                Ok(Some(mut config)) => {
+                    tracing::info!("Updating database with new download folder");
+                    config.download_folder = folder.clone();
+                    
+                    // Save updated config to database
+                    if let Err(e) = db::save_qbittorrent_config(&state.db_pool, &config).await {
+                        tracing::error!("Failed to save config to database: {}", e);
+                        return Err(format!("Failed to save config: {}", e));
+                    }
+                    tracing::info!("Successfully saved new download folder to database");
+                }
+                Ok(None) => {
+                    tracing::error!("No qBittorrent config found in database");
+                    return Err("No qBittorrent config found".to_string());
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get config from database: {}", e);
+                    return Err(format!("Failed to get config: {}", e));
+                }
+            }
+
+            // Notify frontend
+            if let Err(e) = window.emit("download-folder-changed", ()) {
+                tracing::error!("Failed to emit download-folder-changed event: {}", e);
+                return Err(format!("Failed to emit event: {}", e));
+            }
+            tracing::info!("Notified frontend of download folder change");
+
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to set download folder: {}", e);
+            Err(format!("Failed to set download folder: {}", e))
+        }
+    }
 }
 
 #[tauri::command]
 async fn delete_downloaded_file(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
     filename: String,
 ) -> Result<(), String> {
-    let client = state.qb_client.lock().await;
-    let download_folder = client
-        .get_download_folder()
-        .await
-        .map_err(|e| format!("Failed to get download folder: {}", e))?;
-
-    let file_path = std::path::Path::new(&download_folder).join(&filename);
-    std::fs::remove_file(file_path)
+    // Use the full path provided by the frontend
+    std::fs::remove_file(filename)
         .map_err(|e| format!("Failed to delete file: {}", e))?;
 
     Ok(())
@@ -224,6 +275,40 @@ async fn get_downloaded_files(state: State<'_, AppState>) -> Result<Vec<Download
 struct DownloadedFile {
     filename: String,
     size: String,
+}
+
+#[tauri::command]
+async fn scan_downloaded_anime(state: State<'_, AppState>) -> Result<Vec<hama::HamaMetadata>, String> {
+    let config = db::get_qbittorrent_config(&state.db_pool)
+        .await
+        .map_err(|e| format!("Failed to get config: {}", e))?
+        .ok_or_else(|| "No qBittorrent config found".to_string())?;
+        
+    let download_folder = config.download_folder;
+    
+    if !Path::new(&download_folder).exists() {
+        return Err(format!("Download folder does not exist: {}", download_folder));
+    }
+    
+    tracing::info!("Scanning download folder: {}", download_folder);
+    
+    let metadata = hama::fetch_anime_metadata(download_folder).await?;
+    
+    tracing::info!(
+        "Found {} anime series in downloads folder",
+        metadata.len()
+    );
+    
+    for anime in &metadata {
+        tracing::info!(
+            "Anime: {} - {} episodes, {} specials",
+            anime.title,
+            anime.episode_count,
+            anime.special_count
+        );
+    }
+    
+    Ok(metadata)
 }
 
 #[tokio::main]
@@ -307,7 +392,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             set_download_folder,
             delete_downloaded_file,
             get_downloaded_files,
-            // ... other handlers ...
+            scan_downloaded_anime,
+            hama::fetch_anime_metadata,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").expect("main window not found");
@@ -337,10 +423,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(tauri::generate_context!())?;
 
-    app.run(|app_handle, event| match event {
+    app.run(|_app_handle, event| match event {
         tauri::RunEvent::WindowEvent { 
             label,
-            event: tauri::WindowEvent::CloseRequested { api, .. },
+            event: tauri::WindowEvent::CloseRequested { api: _, .. },
             ..
         } => {
             tracing::info!("Close requested for window {}", label);

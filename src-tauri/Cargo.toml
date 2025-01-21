@@ -38,3 +38,6 @@ scraper = "0.17"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite", "macros"] }
+walkdir = "2.4.0"
+dirs = "5.0"
+parking_lot = "0.12"

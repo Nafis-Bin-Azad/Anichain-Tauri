@@ -1,115 +1,163 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import Card from "./Card";
+import { useState, useEffect } from "react";
+import DownloadCard from "./DownloadCard";
+import { listen } from "@tauri-apps/api/event";
 
-interface DownloadedFile {
-  filename: string;
-  size: string;
+interface AnimeEpisode {
+  number: number;
+  file_name: string;
+  path: string;
+  is_special: boolean;
+}
+
+interface HamaMetadata {
+  title: string;
+  season_count: number;
+  episode_count: number;
+  special_count: number;
+  year?: number;
+  studio?: string;
+  genres: string[];
+  summary?: string;
+  rating?: number;
+  image_url?: string;
+  episodes: AnimeEpisode[];
+  specials: AnimeEpisode[];
 }
 
 export default function Downloads() {
+  const [folders, setFolders] = useState<HamaMetadata[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [files, setFiles] = useState<DownloadedFile[]>([]);
-  const [downloadFolder, setDownloadFolder] = useState<string>("");
+  const [lastUpdate, setLastUpdate] = useState<number>(0);
+  const [isVisible, setIsVisible] = useState(true);
 
   useEffect(() => {
-    loadFiles();
-    loadDownloadFolder();
+    // Load folders when component mounts or becomes visible
+    if (isVisible) {
+      loadFolders();
+    }
+
+    // Listen for download folder changes
+    const unsubscribe = listen("download-folder-changed", () => {
+      // Only reload if it's been more than 5 seconds since last update
+      const now = Date.now();
+      if (now - lastUpdate > 5000) {
+        loadFolders();
+        setLastUpdate(now);
+      }
+    });
+
+    return () => {
+      unsubscribe.then((fn) => fn());
+    };
+  }, [isVisible, lastUpdate]);
+
+  // Use Intersection Observer to detect when component is visible
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry.isIntersecting);
+      },
+      { threshold: 0.1 }
+    );
+
+    const element = document.getElementById("downloads-container");
+    if (element) {
+      observer.observe(element);
+    }
+
+    return () => {
+      if (element) {
+        observer.unobserve(element);
+      }
+    };
   }, []);
 
-  const loadFiles = async () => {
+  async function loadFolders() {
     try {
-      const downloadedFiles = await invoke<DownloadedFile[]>(
-        "get_downloaded_files"
+      setIsLoading(true);
+      console.log("Fetching downloaded anime folders...");
+      const scannedFolders = await invoke<HamaMetadata[]>(
+        "scan_downloaded_anime"
       );
-      setFiles(downloadedFiles);
-      setIsLoading(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load files");
-      setIsLoading(false);
-    }
-  };
 
-  const loadDownloadFolder = async () => {
-    try {
-      const folder = await invoke<string>("get_download_folder");
-      setDownloadFolder(folder);
-    } catch (err) {
-      console.error("Failed to load download folder:", err);
-    }
-  };
+      console.log("Received folders:", scannedFolders);
+      console.log(
+        "Folders with images:",
+        scannedFolders.map((folder) => ({
+          title: folder.title,
+          imageUrl: folder.image_url,
+          episodes: folder.episodes.length,
+          specials: folder.specials.length,
+        }))
+      );
 
-  const handleDelete = async (filename: string) => {
-    try {
-      await invoke("delete_downloaded_file", { filename });
-      // Refresh the file list
-      loadFiles();
-    } catch (err) {
-      console.error("Failed to delete file:", err);
+      setFolders(scannedFolders);
+    } catch (error) {
+      console.error("Error loading folders:", error);
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }
 
   if (isLoading) {
     return (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4 p-4">
-        {[...Array(10)].map((_, i) => (
-          <Card
-            key={i}
-            type="download"
-            title=""
-            episodeInfo=""
-            isLoading={true}
-          />
+      <div
+        id="downloads-container"
+        className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-7 gap-4 p-4"
+      >
+        {[...Array(12)].map((_, i) => (
+          <div key={i} className="animate-pulse">
+            <div className="bg-gray-300 rounded-lg aspect-[2/3]" />
+          </div>
         ))}
       </div>
     );
   }
 
-  if (error) {
+  if (folders.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full">
-        <div className="text-red-500">{error}</div>
+      <div
+        id="downloads-container"
+        className="flex items-center justify-center h-full text-gray-500"
+      >
+        No anime found in downloads folder
       </div>
     );
   }
 
   return (
-    <div className="p-4">
-      <div className="mb-4">
-        <h2 className="text-lg font-semibold text-text-primary">
-          Download Folder: {downloadFolder}
-        </h2>
-      </div>
+    <div
+      id="downloads-container"
+      className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-7 gap-4 p-4"
+    >
+      {folders.map((folder, index) => {
+        console.log(`Rendering folder ${index}:`, {
+          title: folder.title,
+          imageUrl: folder.image_url,
+          episodes: folder.episodes.length,
+          specials: folder.specials.length,
+        });
 
-      {files.length === 0 ? (
-        <div className="flex items-center justify-center h-64">
-          <p className="text-text-secondary">No downloaded files found</p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-          {files.map((file) => {
-            // Extract series name and episode info from filename
-            const parts = file.filename.split(" - ");
-            const seriesName = parts[0].replace("[SubsPlease]", "").trim();
-            const episodeInfo =
-              parts[1]?.split("[")[0].trim() || "Unknown Episode";
-
-            return (
-              <Card
-                key={file.filename}
-                type="download"
-                title={seriesName}
-                episodeInfo={episodeInfo}
-                fileSize={file.size}
-                onDelete={() => handleDelete(file.filename)}
-              />
-            );
-          })}
-        </div>
-      )}
+        return (
+          <DownloadCard
+            key={`${folder.title}-${index}`}
+            title={folder.title}
+            totalEpisodes={folder.episodes.length + folder.specials.length}
+            seasonCount={folder.season_count}
+            imageUrl={folder.image_url}
+            onClick={() => {}}
+            onDelete={async () => {
+              await invoke("delete_downloaded_file", {
+                filename: folder.episodes[0]?.path,
+              });
+              loadFolders();
+            }}
+          />
+        );
+      })}
     </div>
   );
 }

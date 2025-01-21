@@ -3,6 +3,7 @@ use reqwest::Client as ReqwestClient;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use serde_json::json;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct QBittorrentConfig {
@@ -344,15 +345,40 @@ impl QBittorrentClient {
         Ok(items)
     }
 
-    pub async fn get_download_folder(&self) -> Result<String> {
+    pub async fn get_download_folder(&self) -> Result<String, String> {
+        tracing::info!("Retrieving download folder from qBittorrent configuration");
         let config = self.config.lock().await;
+        tracing::info!("Download folder from config: {}", config.download_folder);
         Ok(config.download_folder.clone())
     }
 
-    pub async fn set_download_folder(&self, folder: String) -> Result<()> {
+    pub async fn set_download_folder(&self, folder: String) -> Result<(), String> {
+        tracing::info!("Attempting to set qBittorrent download folder to: {}", folder);
         let mut config = self.config.lock().await;
-        config.download_folder = folder;
-        Ok(())
+        
+        // Update the download folder in qBittorrent
+        let preferences = json!({
+            "save_path": &folder
+        });
+        
+        let url = format!("{}/api/v2/app/setPreferences", config.url);
+        tracing::info!("Sending request to update qBittorrent preferences at: {}", url);
+        
+        match self.client.post(&url)
+            .form(&[("json", preferences.to_string())])
+            .send()
+            .await {
+                Ok(_) => {
+                    tracing::info!("Successfully updated qBittorrent preferences");
+                    tracing::info!("Updating local config with new download folder: {}", folder);
+                    config.download_folder = folder;
+                    Ok(())
+                }
+                Err(e) => {
+                    tracing::error!("Failed to update qBittorrent preferences: {}", e);
+                    Err(format!("Failed to set download folder: {}", e))
+                }
+            }
     }
 }
 

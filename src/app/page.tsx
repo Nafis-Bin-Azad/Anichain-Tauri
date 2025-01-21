@@ -5,6 +5,7 @@ import Layout from "@/components/Layout";
 import Card from "@/components/Card";
 import Schedule from "@/components/Schedule";
 import Settings from "@/components/Settings";
+import Downloads from "@/components/Downloads";
 import { invoke } from "@tauri-apps/api/core";
 
 interface AnimeMetadata {
@@ -177,13 +178,7 @@ export default function Home() {
         );
 
       case "downloads":
-        return (
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4 auto-rows-fr">
-            <div className="col-span-full text-center text-gray-500">
-              Downloads will be shown here
-            </div>
-          </div>
-        );
+        return <Downloads />;
 
       case "schedule":
         return <Schedule />;
