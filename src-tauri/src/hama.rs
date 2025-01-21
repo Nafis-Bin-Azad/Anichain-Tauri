@@ -63,58 +63,108 @@ impl HamaInterface {
             return Err(format!("Folder does not exist: {}", folder_path));
         }
         
-        // Read directory entries
-        let entries = std::fs::read_dir(path)
-            .map_err(|e| format!("Failed to read directory: {}", e))?;
-            
         // Group files by series
         let mut series_map: std::collections::HashMap<String, Vec<(String, bool)>> = std::collections::HashMap::new();
-            
-        for entry in entries {
-            let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
-            let path = entry.path();
-            
-            // Skip non-video files and the .rtf file
-            if let Some(ext) = path.extension() {
-                let ext = ext.to_string_lossy().to_lowercase();
-                if !["mkv", "mp4", "avi"].contains(&ext.as_str()) || ext == "rtf" {
+        
+        // Function to scan directory and its subdirectories
+        fn scan_dir(dir: &Path, series_map: &mut HashMap<String, Vec<(String, bool)>>) -> Result<(), String> {
+            for entry in std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory: {}", e))? {
+                let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+                let path = entry.path();
+                
+                if path.is_dir() {
+                    // Skip if this is a "Specials" folder - we'll handle its contents under the parent anime
+                    if path.file_name()
+                        .and_then(|n| n.to_str())
+                        .map_or(false, |name| name.to_lowercase() == "specials") {
+                        continue;
+                    }
+                    // Recursively scan subdirectories
+                    scan_dir(&path, series_map)?;
                     continue;
                 }
-            } else {
-                continue;
-            }
-            
-            let file_name = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
                 
-            // Try to extract series name from filename
-            if let Some(caps) = SUBSPLEASE_PATTERN.captures(&file_name) {
-                let series_name = caps.get(1)
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_else(|| file_name.clone());
+                // Skip non-video files
+                if let Some(ext) = path.extension() {
+                    let ext = ext.to_string_lossy().to_lowercase();
+                    if !["mkv", "mp4", "avi"].contains(&ext.as_str()) {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                
+                let file_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                
+                // Try to extract series name from filename or parent folder
+                let (series_name, is_special) = if let Some(caps) = SUBSPLEASE_PATTERN.captures(&file_name) {
+                    let series_name = caps.get(1)
+                        .map(|m| m.as_str().trim().to_string())
+                        .unwrap_or_else(|| file_name.clone());
                     
-                let is_special = file_name.to_lowercase().contains("special") || 
-                               file_name.to_lowercase().contains("sp") || 
-                               file_name.to_lowercase().contains("ova");
-                               
-                series_map.entry(series_name)
+                    let is_special = file_name.to_lowercase().contains("special") || 
+                                   file_name.to_lowercase().contains("sp") || 
+                                   file_name.to_lowercase().contains("ova");
+                    
+                    (series_name, is_special)
+                } else if let Some(parent) = path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) {
+                    // For files in subdirectories, use parent folder name
+                    let is_special = parent.to_lowercase() == "specials" ||
+                                   file_name.to_lowercase().contains("special") ||
+                                   file_name.to_lowercase().contains("sp") ||
+                                   file_name.to_lowercase().contains("ova");
+                    
+                    // Go up one more level if parent is numeric or "Specials"
+                    let series_name = if parent.chars().all(|c| c.is_ascii_digit()) || parent.to_lowercase() == "specials" {
+                        path.parent()
+                            .and_then(|p| p.parent())
+                            .and_then(|p| p.file_name())
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| parent.to_string())
+                    } else {
+                        parent.to_string()
+                    };
+                    
+                    (series_name, is_special)
+                } else {
+                    continue;
+                };
+                
+                // Clean up series name
+                let clean_series_name = series_name
+                    .replace(".1080p.Blu-Ray.10-Bit.Dual-Audio.TrueHD.x265-iAHD", "")
+                    .replace("Black.Clover", "Black Clover");
+                
+                series_map.entry(clean_series_name)
                     .or_default()
-                    .push((file_name, is_special));
+                    .push((path.to_string_lossy().to_string(), is_special));
             }
+            Ok(())
         }
+        
+        // Scan the root directory and all subdirectories
+        scan_dir(path, &mut series_map)?;
         
         // Convert grouped files into metadata
         for (series_name, files) in series_map {
             let mut episodes = Vec::new();
             let mut specials = Vec::new();
             
-            for (file_name, is_special) in files {
+            for (file_path, is_special) in files {
+                let path = std::path::Path::new(&file_path);
+                let file_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                
                 let episode = AnimeEpisode {
                     number: extract_episode_number(&file_name),
-                    file_name: file_name.clone(),
-                    path: path.join(&file_name).to_string_lossy().to_string(),
+                    file_name,
+                    path: file_path,
                     is_special,
                 };
                 
@@ -186,7 +236,7 @@ fn save_image_cache(cache: &HashMap<String, String>) {
 
 #[tauri::command]
 pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadata>, String> {
-    tracing::info!("Scanning folder for anime: {}", folder_path);
+    tracing::info!("Scanning anime folder...");
     
     let hama = HamaInterface::new();
     let mut metadata = hama.scan_folder(&folder_path)?;
@@ -207,13 +257,10 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
     
     // Fetch additional metadata for each anime
     for anime in &mut metadata {
-        tracing::info!("Fetching metadata for: {}", anime.title);
-        
         // Check cache first
         {
             let image_cache = IMAGE_CACHE.lock();
             if let Some(cached_url) = image_cache.get(&anime.title) {
-                tracing::info!("Found cached image for '{}': {}", anime.title, cached_url);
                 anime.image_url = Some(cached_url.clone());
                 continue;
             }
@@ -222,6 +269,7 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
         // Clean up the title for better search results
         let clean_title = anime.title
             .replace("[SubsPlease]", "")
+            .replace("Black.Clover", "Black Clover")
             .split(" - ")
             .next()
             .unwrap_or(&anime.title)
@@ -237,7 +285,7 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
             urlencoding::encode(&clean_title)
         );
         
-        tracing::info!("Searching Jikan API for: {}", clean_title);
+        tracing::info!("Fetching image for: {}", clean_title);
         
         match client.get(&query_url).send().await {
             Ok(response) => {
@@ -245,8 +293,7 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
                     match response.json::<serde_json::Value>().await {
                         Ok(data) => {
                             if let Some(results) = data.get("data").and_then(|d| d.as_array()) {
-                                // Try to find the best match from the results
-                                for result in results {
+                                for result in results.iter() {
                                     let result_title = result.get("title").and_then(|t| t.as_str())
                                         .or_else(|| result.get("title_english").and_then(|t| t.as_str()))
                                         .unwrap_or("");
@@ -261,50 +308,47 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
                                             .and_then(|j| j.get("large_image_url"))
                                             .and_then(|u| u.as_str())
                                         {
-                                            tracing::info!("Found image for '{}': {}", clean_title, image_url);
-                                            anime.image_url = Some(image_url.to_string());
-                                            
-                                            // Cache the image URL
-                                            {
-                                                let mut image_cache = IMAGE_CACHE.lock();
-                                                image_cache.insert(anime.title.clone(), image_url.to_string());
-                                                save_image_cache(&image_cache);
+                                            // Verify image URL is accessible
+                                            match client.head(image_url).send().await {
+                                                Ok(img_response) if img_response.status().is_success() => {
+                                                    tracing::info!("Found image for '{}': {}", clean_title, image_url);
+                                                    anime.image_url = Some(image_url.to_string());
+                                                    
+                                                    // Cache the image URL
+                                                    {
+                                                        let mut image_cache = IMAGE_CACHE.lock();
+                                                        image_cache.insert(anime.title.clone(), image_url.to_string());
+                                                        save_image_cache(&image_cache);
+                                                    }
+                                                    
+                                                    // Extract other metadata
+                                                    if let Some(synopsis) = result.get("synopsis").and_then(|s| s.as_str()) {
+                                                        anime.summary = Some(synopsis.to_string());
+                                                    }
+                                                    if let Some(score) = result.get("score").and_then(|s| s.as_f64()) {
+                                                        anime.rating = Some(score as f32);
+                                                    }
+                                                    if let Some(genres) = result.get("genres").and_then(|g| g.as_array()) {
+                                                        anime.genres = genres
+                                                            .iter()
+                                                            .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
+                                                            .map(|s| s.to_string())
+                                                            .collect();
+                                                    }
+                                                    break;
+                                                }
+                                                _ => continue
                                             }
-                                            
-                                            // Extract other metadata
-                                            if anime.title.chars().all(|c| c.is_ascii_digit()) {
-                                                anime.title = result_title.to_string();
-                                            }
-                                            if let Some(synopsis) = result.get("synopsis").and_then(|s| s.as_str()) {
-                                                anime.summary = Some(synopsis.to_string());
-                                            }
-                                            if let Some(score) = result.get("score").and_then(|s| s.as_f64()) {
-                                                anime.rating = Some(score as f32);
-                                            }
-                                            if let Some(genres) = result.get("genres").and_then(|g| g.as_array()) {
-                                                anime.genres = genres
-                                                    .iter()
-                                                    .filter_map(|g| g.get("name").and_then(|n| n.as_str()))
-                                                    .map(|s| s.to_string())
-                                                    .collect();
-                                            }
-                                            break;
                                         }
                                     }
                                 }
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("Failed to parse Jikan API response: {}", e);
-                        }
+                        Err(e) => tracing::error!("Failed to parse Jikan API response for '{}': {}", clean_title, e)
                     }
-                } else {
-                    tracing::warn!("Jikan API returned status {}", response.status());
                 }
             }
-            Err(e) => {
-                tracing::error!("Failed to fetch from Jikan API: {}", e);
-            }
+            Err(e) => tracing::error!("Failed to fetch from Jikan API for '{}': {}", clean_title, e)
         }
         
         // If no image was found, set a default image
@@ -319,17 +363,7 @@ pub async fn fetch_anime_metadata(folder_path: String) -> Result<Vec<HamaMetadat
         }
     }
     
-    tracing::info!("Found {} anime series", metadata.len());
-    for anime in &metadata {
-        tracing::info!(
-            "Anime: {} - {} episodes, {} specials, has_image: {}",
-            anime.title,
-            anime.episode_count,
-            anime.special_count,
-            anime.image_url.is_some()
-        );
-    }
-    
+    tracing::info!("Finished scanning {} anime series", metadata.len());
     Ok(metadata)
 }
 

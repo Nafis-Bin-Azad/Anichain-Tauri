@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 
 interface DownloadCardProps {
   title: string;
@@ -11,7 +11,7 @@ interface DownloadCardProps {
   onClick: () => void;
 }
 
-export default function DownloadCard({
+const DownloadCard = React.memo(function DownloadCard({
   title,
   totalEpisodes,
   seasonCount,
@@ -28,34 +28,37 @@ export default function DownloadCard({
   useEffect(() => {
     if (imageUrl) {
       setCurrentImageUrl(imageUrl);
+      setIsImageLoading(true); // Reset loading state when URL changes
     }
   }, [imageUrl]);
 
-  console.log(`Rendering DownloadCard for ${title}:`, {
-    imageUrl: currentImageUrl,
-    totalEpisodes,
-    seasonCount,
-  });
+  const handleImageError = useCallback(
+    (e: React.SyntheticEvent<HTMLImageElement, Event>) => {
+      const img = e.currentTarget;
 
-  const handleImageError = (
-    e: React.SyntheticEvent<HTMLImageElement, Event>
-  ) => {
-    console.warn(`Failed to load image for ${title}:`, e);
-    const img = e.currentTarget;
+      // Try alternative image formats if the first one fails
+      if (img.src.endsWith(".jpg")) {
+        setCurrentImageUrl(img.src.replace(".jpg", ".png"));
+      } else if (img.src.endsWith(".png")) {
+        setCurrentImageUrl(img.src.replace(".png", ".webp"));
+      } else if (img.src.endsWith(".webp")) {
+        setCurrentImageUrl("/placeholder.jpg");
+      }
+    },
+    []
+  );
 
-    // Try alternative image formats if the first one fails
-    if (img.src.endsWith(".jpg")) {
-      setCurrentImageUrl(img.src.replace(".jpg", ".png"));
-    } else if (img.src.endsWith(".png")) {
-      setCurrentImageUrl(img.src.replace(".png", ".webp"));
-    } else if (img.src.endsWith(".webp")) {
-      setCurrentImageUrl("/placeholder.jpg");
-    }
-  };
-
-  const handleImageLoad = () => {
+  const handleImageLoad = useCallback(() => {
     setIsImageLoading(false);
-  };
+  }, []);
+
+  const handleDeleteClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onDelete();
+    },
+    [onDelete]
+  );
 
   return (
     <div className="group flex flex-col cursor-pointer" onClick={onClick}>
@@ -81,10 +84,7 @@ export default function DownloadCard({
         </div>
 
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
+          onClick={handleDeleteClick}
           className="absolute top-2 left-2 p-2 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
         >
           <svg
@@ -112,4 +112,6 @@ export default function DownloadCard({
       </div>
     </div>
   );
-}
+});
+
+export default DownloadCard;
