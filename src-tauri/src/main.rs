@@ -38,53 +38,28 @@ async fn connect_qbittorrent(
     url: String,
     username: String,
     password: String,
-    window: tauri::Window,
 ) -> Result<(), String> {
     let config = QBittorrentConfig {
-        url: url.clone(),
-        username: username.clone(),
-        password: password.clone(),
+        url,
+        username,
+        password,
+        download_folder: state.qb_client.lock().await.get_download_folder().await
+            .map_err(|e| format!("Failed to get download folder: {}", e))?,
     };
 
-    // Try to connect
-    let result = state
-        .qb_client
-        .lock()
+    // Save to database first
+    db::save_qbittorrent_config(&state.db_pool, &config)
         .await
-        .connect(config.clone())
-        .await;
+        .map_err(|e| format!("Failed to save config: {}", e))?;
 
-    match result {
-        Ok(_) => {
-            // Save credentials to database
-            db::save_qbittorrent_config(&state.db_pool, &config)
-                .await
-                .map_err(|e| format!("Failed to save config: {}", e))?;
+    // Then try to connect
+    let client = state.qb_client.lock().await;
+    client
+        .connect(config)
+        .await
+        .map_err(|e| format!("Failed to connect: {}", e))?;
 
-            // Emit connection status
-            window.emit("qbittorrent-status", ConnectionStatus {
-                is_connected: true,
-                error_message: None,
-            }).map_err(|e| e.to_string())?;
-
-            Ok(())
-        }
-        Err(e) => {
-            let error_msg = format!("Failed to connect: {}", e);
-            tracing::error!("{}", error_msg);
-
-            // Emit connection status with error
-            window.emit("qbittorrent-status", ConnectionStatus {
-                is_connected: false,
-                error_message: Some(error_msg.clone()),
-            }).map_err(|e| e.to_string())?;
-
-            // Emit event to switch to settings tab
-            window.emit("switch-to-settings", ()).map_err(|e| e.to_string())?;
-
-            Err(error_msg)
-        }
-    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -132,7 +107,7 @@ async fn track_anime(
     // Add to qBittorrent if connected
     let qb_client = state.qb_client.lock().await;
     if qb_client.is_connected().await {
-        if let Err(e) = qb_client.add_torrent(&magnet_url, Some("Anime")).await {
+        if let Err(e) = qb_client.add_torrent(&magnet_url).await {
             tracing::error!("Failed to add torrent to qBittorrent: {}", e);
             return Err(format!("Failed to add torrent: {}", e));
         }
@@ -160,6 +135,95 @@ async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
     Ok(Settings {
         qbittorrent: config,
     })
+}
+
+#[tauri::command]
+async fn get_download_folder(state: State<'_, AppState>) -> Result<String, String> {
+    let client = state.qb_client.lock().await;
+    client
+        .get_download_folder()
+        .await
+        .map_err(|e| format!("Failed to get download folder: {}", e))
+}
+
+#[tauri::command]
+async fn set_download_folder(
+    state: State<'_, AppState>,
+    folder: String,
+) -> Result<(), String> {
+    let client = state.qb_client.lock().await;
+    client
+        .set_download_folder(folder)
+        .await
+        .map_err(|e| format!("Failed to set download folder: {}", e))
+}
+
+#[tauri::command]
+async fn delete_downloaded_file(
+    state: State<'_, AppState>,
+    filename: String,
+) -> Result<(), String> {
+    let client = state.qb_client.lock().await;
+    let download_folder = client
+        .get_download_folder()
+        .await
+        .map_err(|e| format!("Failed to get download folder: {}", e))?;
+
+    let file_path = std::path::Path::new(&download_folder).join(&filename);
+    std::fs::remove_file(file_path)
+        .map_err(|e| format!("Failed to delete file: {}", e))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_downloaded_files(state: State<'_, AppState>) -> Result<Vec<DownloadedFile>, String> {
+    let client = state.qb_client.lock().await;
+    let download_folder = client
+        .get_download_folder()
+        .await
+        .map_err(|e| format!("Failed to get download folder: {}", e))?;
+
+    let mut files = Vec::new();
+    let path = std::path::Path::new(&download_folder);
+    
+    if !path.exists() {
+        return Ok(files);
+    }
+
+    for entry in std::fs::read_dir(path).map_err(|e| format!("Failed to read directory: {}", e))? {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let metadata = entry.metadata().map_err(|e| format!("Failed to read metadata: {}", e))?;
+        
+        if metadata.is_file() {
+            let filename = entry.file_name().to_string_lossy().to_string();
+            let size = metadata.len();
+            let size_str = if size < 1024 {
+                format!("{}B", size)
+            } else if size < 1024 * 1024 {
+                format!("{:.1}KB", size as f64 / 1024.0)
+            } else if size < 1024 * 1024 * 1024 {
+                format!("{:.1}MB", size as f64 / (1024.0 * 1024.0))
+            } else {
+                format!("{:.1}GB", size as f64 / (1024.0 * 1024.0 * 1024.0))
+            };
+
+            files.push(DownloadedFile {
+                filename,
+                size: size_str,
+            });
+        }
+    }
+
+    // Sort by filename
+    files.sort_by(|a, b| a.filename.cmp(&b.filename));
+    Ok(files)
+}
+
+#[derive(Debug, Serialize)]
+struct DownloadedFile {
+    filename: String,
+    size: String,
 }
 
 #[tokio::main]
@@ -201,6 +265,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             url: "http://127.0.0.1:8080".to_string(),
             username: "nafislord".to_string(),
             password: "Saphire 1".to_string(),
+            download_folder: "downloads".to_string(),
         };
         
         // Try to connect with default config
@@ -229,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = tauri::Builder::default()
         .manage(app_state)
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             connect_qbittorrent,
             check_qbittorrent_connection,
@@ -237,6 +303,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             track_anime,
             get_schedule,
             get_settings,
+            get_download_folder,
+            set_download_folder,
+            delete_downloaded_file,
+            get_downloaded_files,
             // ... other handlers ...
         ])
         .setup(|app| {
@@ -267,14 +337,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(tauri::generate_context!())?;
 
-    app.run(|_app_handle, event| match event {
+    app.run(|app_handle, event| match event {
         tauri::RunEvent::WindowEvent { 
             label,
             event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } => {
-            api.prevent_close();
             tracing::info!("Close requested for window {}", label);
+            // Don't prevent closing, just exit the app
+            std::process::exit(0);
         }
         _ => {}
     });

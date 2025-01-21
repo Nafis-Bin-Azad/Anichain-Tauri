@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 interface QBittorrentConfig {
   url: string;
   username: string;
   password: string;
+  download_folder: string;
 }
 
 interface Settings {
@@ -22,6 +24,7 @@ export default function Settings() {
     url: "http://localhost:8080",
     username: "nafislord",
     password: "Saphire 1",
+    download_folder: "downloads",
   });
 
   useEffect(() => {
@@ -74,6 +77,23 @@ export default function Settings() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
     setConfig((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleBrowseFolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: config.download_folder,
+      });
+      if (selected) {
+        const folder = selected as string;
+        await invoke("set_download_folder", { folder });
+        setConfig((prev) => ({ ...prev, download_folder: folder }));
+      }
+    } catch (err) {
+      console.error("Failed to select folder:", err);
+    }
   };
 
   if (isLoading) {
@@ -132,6 +152,27 @@ export default function Settings() {
               onChange={handleInputChange}
               className="w-full px-4 py-2 rounded-lg bg-background-primary border border-border focus:outline-none focus:ring-2 focus:ring-primary text-text-primary"
             />
+          </div>
+
+          <div>
+            <label className="block text-text-primary font-medium mb-2">
+              Download Folder
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                name="download_folder"
+                value={config.download_folder}
+                onChange={handleInputChange}
+                className="flex-1 px-4 py-2 rounded-lg bg-background-primary border border-border focus:outline-none focus:ring-2 focus:ring-primary text-text-primary"
+              />
+              <button
+                onClick={handleBrowseFolder}
+                className="px-4 py-2 bg-secondary text-white rounded-lg hover:bg-secondary-dark focus:outline-none focus:ring-2 focus:ring-secondary"
+              >
+                Browse
+              </button>
+            </div>
           </div>
 
           {error && <div className="text-red-500 text-sm mt-2">{error}</div>}

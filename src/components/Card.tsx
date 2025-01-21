@@ -31,8 +31,10 @@ interface CardProps {
   isTracked?: boolean;
   onTrackToggle?: (magnetUrl?: string) => void;
   onUntrack?: () => void;
+  onDelete?: () => void;
   isLoading?: boolean;
   magnetUrl?: string;
+  fileSize?: string;
 }
 
 export default function Card({
@@ -43,8 +45,10 @@ export default function Card({
   isTracked,
   onTrackToggle,
   onUntrack,
+  onDelete,
   isLoading = false,
   magnetUrl,
+  fileSize,
 }: CardProps) {
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -93,6 +97,9 @@ export default function Card({
                 {title}
               </h3>
               <p className="text-gray-300 text-sm">{episodeInfo}</p>
+              {fileSize && (
+                <p className="text-gray-300 text-sm mt-1">Size: {fileSize}</p>
+              )}
             </div>
           </>
         )}
@@ -130,6 +137,17 @@ export default function Card({
               className="mt-4 px-4 py-2 rounded-lg w-full bg-red-500 hover:bg-red-600 text-white transition-colors"
             >
               Untrack
+            </button>
+          )}
+          {type === "download" && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete?.();
+              }}
+              className="mt-4 px-4 py-2 rounded-lg w-full bg-red-500 hover:bg-red-600 text-white transition-colors"
+            >
+              Delete
             </button>
           )}
         </div>
