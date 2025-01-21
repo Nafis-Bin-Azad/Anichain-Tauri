@@ -21,7 +21,9 @@ use std::sync::mpsc::channel;
 use std::time::Duration;
 use db::{get_qbittorrent_config, store_anime_metadata};
 use hama::fetch_anime_metadata;
+use std::sync::OnceLock;
 
+#[derive(Clone, Debug)]
 pub struct AppState {
     pub qb_client: Arc<Mutex<QBittorrentClient>>,
     pub anime_client: Arc<AnimeClient>,
@@ -39,6 +41,8 @@ struct ConnectionStatus {
 struct Settings {
     qbittorrent: Option<QBittorrentConfig>,
 }
+
+static APP_STATE: OnceLock<AppState> = OnceLock::new();
 
 #[tauri::command]
 async fn connect_qbittorrent(
@@ -402,6 +406,31 @@ async fn scan_anime_folder(app_handle: &tauri::AppHandle) -> Result<(), String> 
     Ok(())
 }
 
+#[tauri::command]
+async fn fetch_anime_metadata_command(folder_path: String) -> Result<Vec<hama::HamaMetadata>, String> {
+    // If the folder path ends with a specific anime title, get it from cache
+    if let Some(title) = folder_path.split('/').last() {
+        let state = APP_STATE.get().ok_or("App state not initialized")?;
+        let cached_metadata = db::get_anime_metadata(&state.db_pool)
+            .await
+            .map_err(|e| format!("Failed to get cached metadata: {}", e))?;
+        
+        // Find the specific anime in the cached metadata
+        let filtered_metadata: Vec<_> = cached_metadata
+            .into_iter()
+            .filter(|m| m.title == title)
+            .collect();
+            
+        if !filtered_metadata.is_empty() {
+            return Ok(filtered_metadata);
+        }
+    }
+    
+    // If not found in cache or scanning entire folder, use HamaClient
+    let client = hama::HamaClient::new();
+    client.scan_folder(&folder_path).await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
@@ -467,6 +496,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracked_anime: Arc::new(Mutex::new(std::collections::HashSet::new())),
         db_pool,
     };
+    
+    // Set the global app state
+    APP_STATE.set(app_state.clone()).unwrap();
 
     let app = tauri::Builder::default()
         .manage(app_state)
@@ -486,6 +518,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             scan_downloaded_anime,
             get_cached_anime_metadata,
             start_folder_watch,
+            fetch_anime_metadata_command,
         ])
         .setup(|app| {
             let handle = app.handle();

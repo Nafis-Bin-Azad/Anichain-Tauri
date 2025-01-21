@@ -7,6 +7,7 @@ import Schedule from "@/components/Schedule";
 import Settings from "@/components/Settings";
 import Downloads from "@/components/Downloads";
 import { invoke } from "@tauri-apps/api/core";
+import AnimeDetails from "./anime/[id]/page";
 
 interface AnimeMetadata {
   title: string;
@@ -36,6 +37,7 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState("available");
   const [trackedAnime, setTrackedAnime] = useState<Set<string>>(new Set());
   const [availableAnime, setAvailableAnime] = useState<AnimeInfo[]>([]);
+  const [selectedAnime, setSelectedAnime] = useState<string | null>(null);
 
   useEffect(() => {
     loadAnimeData();
@@ -112,7 +114,6 @@ export default function Home() {
       });
     } catch (error) {
       console.error("Failed to track anime:", error);
-      // You might want to show an error message to the user here
     }
   };
 
@@ -122,6 +123,11 @@ export default function Home() {
       newSet.delete(title);
       return newSet;
     });
+  };
+
+  const handleAnimeSelect = (title: string) => {
+    setSelectedAnime(title);
+    setActiveTab("anime-details");
   };
 
   const renderContent = () => {
@@ -178,7 +184,12 @@ export default function Home() {
         );
 
       case "downloads":
-        return <Downloads />;
+        return <Downloads onAnimeSelect={handleAnimeSelect} />;
+
+      case "anime-details":
+        return selectedAnime ? (
+          <AnimeDetails params={{ id: selectedAnime }} />
+        ) : null;
 
       case "schedule":
         return <Schedule />;

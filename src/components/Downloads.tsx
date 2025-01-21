@@ -22,7 +22,11 @@ interface AnimeMetadata {
   image_url?: string;
 }
 
-export default function Downloads() {
+interface DownloadsProps {
+  onAnimeSelect: (title: string) => void;
+}
+
+export default function Downloads({ onAnimeSelect }: DownloadsProps) {
   const [animeList, setAnimeList] = useState<AnimeMetadata[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,7 +97,7 @@ export default function Downloads() {
             // TODO: Implement delete functionality
           }}
           onClick={() => {
-            // TODO: Implement click functionality
+            onAnimeSelect(anime.title);
           }}
         />
       ))}

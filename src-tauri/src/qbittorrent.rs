@@ -51,8 +51,9 @@ pub struct RssArticle {
     pub id: String,
 }
 
+#[derive(Debug, Clone)]
 pub struct QBittorrentClient {
-    client: ReqwestClient,
+    client: Arc<ReqwestClient>,
     base_url: Arc<Mutex<String>>,
     is_connected: Arc<Mutex<bool>>,
     username: Arc<Mutex<String>>,
@@ -62,154 +63,60 @@ pub struct QBittorrentClient {
 
 impl QBittorrentClient {
     pub fn new() -> Self {
-        let client = ReqwestClient::builder()
-            .cookie_store(true)
-            .build()
-            .unwrap();
-
-        let instance = Self {
-            client,
-            base_url: Arc::new(Mutex::new("http://localhost:8080".to_string())),
+        Self {
+            client: Arc::new(ReqwestClient::builder()
+                .cookie_store(true)
+                .build()
+                .unwrap()),
+            base_url: Arc::new(Mutex::new(String::new())),
             is_connected: Arc::new(Mutex::new(false)),
-            username: Arc::new(Mutex::new("nafislord".to_string())),
-            password: Arc::new(Mutex::new("Saphire 1".to_string())),
+            username: Arc::new(Mutex::new(String::new())),
+            password: Arc::new(Mutex::new(String::new())),
             config: Arc::new(Mutex::new(QBittorrentConfig {
-                url: "http://localhost:8080".to_string(),
-                username: "nafislord".to_string(),
-                password: "Saphire 1".to_string(),
-                download_folder: "downloads".to_string(),
+                url: String::new(),
+                username: String::new(),
+                password: String::new(),
+                download_folder: String::new(),
             })),
-        };
-
-        // Spawn a task to connect with hardcoded credentials
-        tokio::spawn({
-            let instance = instance.clone();
-            async move {
-                let config = QBittorrentConfig {
-                    url: "http://localhost:8080".to_string(),
-                    username: "nafislord".to_string(),
-                    password: "Saphire 1".to_string(),
-                    download_folder: "downloads".to_string(),
-                };
-                
-                match instance.connect(config).await {
-                    Ok(_) => {
-                        tracing::info!("Successfully connected to qBittorrent");
-                    }
-                    Err(e) => {
-                        if e.to_string().contains("banned") {
-                            tracing::error!("IP has been banned. Please go to qBittorrent Web UI settings and remove the IP ban for localhost/127.0.0.1");
-                        } else {
-                            tracing::error!("Failed to connect to qBittorrent: {}", e);
-                        }
-                    }
-                }
-            }
-        });
-
-        instance
+        }
     }
 
     pub async fn connect(&self, config: QBittorrentConfig) -> Result<()> {
-        // Store the credentials
-        *self.base_url.lock().await = config.url.clone();
-        *self.username.lock().await = config.username.clone();
-        *self.password.lock().await = config.password.clone();
-        *self.config.lock().await = config.clone();
+        let mut base_url = self.base_url.lock().await;
+        *base_url = config.url.clone();
 
-        // Try different base URLs (handle both localhost and 127.0.0.1)
-        let urls_to_try = vec![
-            config.url.clone(),
-            config.url.replace("localhost", "127.0.0.1"),
-            config.url.replace("127.0.0.1", "localhost"),
-        ];
+        let mut username = self.username.lock().await;
+        *username = config.username.clone();
 
-        let mut last_error = None;
-        for url in urls_to_try {
-            // Try to authenticate
-            let auth_url = format!("{}/api/v2/auth/login", url);
-            let username = config.username.clone();
-            let password = config.password.clone();
-            
-            // Build form data with proper field names
-            let form = [
-                ("username", username.as_str()),
-                ("password", password.as_str()),
-            ];
+        let mut password = self.password.lock().await;
+        *password = config.password.clone();
 
-            tracing::info!("Attempting to authenticate to qBittorrent at {}", auth_url);
-            
-            // First check if qBittorrent is accessible
-            match self.client.get(&url)
-                .timeout(std::time::Duration::from_secs(5))
-                .send()
-                .await {
-                    Ok(_) => {
-                        // Try to authenticate
-                        match self.client.post(&auth_url)
-                            .header("Referer", &url)
-                            .header("Origin", &url)
-                            .form(&form)
-                            .send()
-                            .await {
-                                Ok(auth_response) => {
-                                    let status = auth_response.status();
-                                    if !status.is_success() {
-                                        let error = auth_response.text().await?;
-                                        last_error = Some(anyhow!("Authentication failed. Check your username and password. Status: {} - {}", status, error));
-                                        continue;
-                                    }
+        let mut stored_config = self.config.lock().await;
+        *stored_config = config.clone();
 
-                                    // Get the response text to check for success
-                                    let response_text = auth_response.text().await?;
-                                    if response_text != "Ok." {
-                                        last_error = Some(anyhow!("Authentication failed: {}", response_text));
-                                        continue;
-                                    }
+        // Clone the values before using them in the form
+        let username_str = username.clone();
+        let password_str = password.clone();
+        let base_url_str = base_url.clone();
 
-                                    // Test connection by getting app version
-                                    let version_url = format!("{}/api/v2/app/version", url);
-                                    tracing::info!("Testing connection by getting app version");
-                                    match self.client.get(&version_url)
-                                        .header("Referer", &url)
-                                        .send()
-                                        .await {
-                                            Ok(version_response) => {
-                                                let status = version_response.status();
-                                                if !status.is_success() {
-                                                    let error = version_response.text().await?;
-                                                    last_error = Some(anyhow!("Connection test failed: {} - {}", status, error));
-                                                    continue;
-                                                }
+        // Try to login
+        let form = [("username", username_str.as_str()), ("password", password_str.as_str())];
+        let response = self.client
+            .post(format!("{}/api/v2/auth/login", base_url_str))
+            .form(&form)
+            .send()
+            .await?;
 
-                                                // Connection successful
-                                                *self.base_url.lock().await = url;
-                                                *self.is_connected.lock().await = true;
-                                                tracing::info!("Successfully connected to qBittorrent");
-                                                return Ok(());
-                                            }
-                                            Err(e) => {
-                                                last_error = Some(anyhow!("Failed to get version: {}", e));
-                                                continue;
-                                            }
-                                        }
-                                }
-                                Err(e) => {
-                                    last_error = Some(anyhow!("Authentication request failed: {}", e));
-                                    continue;
-                                }
-                            }
-                    }
-                    Err(e) => {
-                        last_error = Some(anyhow!("qBittorrent WebUI is not accessible at {}. Error: {}", url, e));
-                        continue;
-                    }
-                }
+        if !response.status().is_success() {
+            let mut is_connected = self.is_connected.lock().await;
+            *is_connected = false;
+            return Err(anyhow!("Failed to login: {}", response.status()));
         }
 
-        // If we get here, all connection attempts failed
-        *self.is_connected.lock().await = false;
-        Err(last_error.unwrap_or_else(|| anyhow!("Failed to connect to qBittorrent")))
+        let mut is_connected = self.is_connected.lock().await;
+        *is_connected = true;
+
+        Ok(())
     }
 
     pub async fn is_connected(&self) -> bool {
@@ -379,18 +286,5 @@ impl QBittorrentClient {
                     Err(format!("Failed to set download folder: {}", e))
                 }
             }
-    }
-}
-
-impl Clone for QBittorrentClient {
-    fn clone(&self) -> Self {
-        Self {
-            client: self.client.clone(),
-            base_url: self.base_url.clone(),
-            is_connected: self.is_connected.clone(),
-            username: self.username.clone(),
-            password: self.password.clone(),
-            config: self.config.clone(),
-        }
     }
 } 

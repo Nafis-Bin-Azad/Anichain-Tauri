@@ -54,15 +54,19 @@ lazy_static! {
 // Add this constant for the default image
 const DEFAULT_IMAGE_URL: &str = "https://placehold.co/225x319/gray/white/png?text=IMAGE+NOT+AVAILABLE";
 
+#[derive(Debug, Clone)]
 pub struct AnimeClient {
-    client: Client,
+    client: Arc<Client>,
     anime_list: Arc<Mutex<Vec<AnimeInfo>>>,
 }
 
 impl AnimeClient {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Arc::new(Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .build()
+                .unwrap()),
             anime_list: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -119,7 +123,7 @@ impl AnimeClient {
         }
         
         // Create a new client for the background task
-        let background_client = Client::new();
+        let background_client = Arc::clone(&self.client);
         let shared_list = self.anime_list.clone();
         
         // Clone what we need for the background task
