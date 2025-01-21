@@ -68,6 +68,7 @@ pub struct AnimeFolder {
     pub image_url: Option<String>,
 }
 
+#[allow(dead_code)]
 pub async fn scan_anime_folder(root_path: &str) -> Result<Vec<AnimeFolder>> {
     let mut anime_folders = Vec::new();
     let root = Path::new(root_path);
@@ -108,6 +109,7 @@ pub async fn scan_anime_folder(root_path: &str) -> Result<Vec<AnimeFolder>> {
     Ok(anime_folders)
 }
 
+#[allow(dead_code)]
 async fn fetch_anime_image(client: &reqwest::Client, title: &str) -> Option<String> {
     // Clean up the title
     let clean_title = title.replace("[SubsPlease]", "").trim().to_string();
@@ -169,6 +171,7 @@ async fn fetch_anime_image(client: &reqwest::Client, title: &str) -> Option<Stri
     None
 }
 
+#[allow(dead_code)]
 fn scan_directory(dir: &Path, folders: &mut Vec<AnimeFolder>) -> Result<()> {
     tracing::debug!("Scanning directory: {}", dir.display());
 
@@ -360,6 +363,7 @@ fn scan_directory(dir: &Path, folders: &mut Vec<AnimeFolder>) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn extract_series_name_from_filename(filename: &str) -> Option<String> {
     // Common patterns for anime filenames
     lazy_static! {

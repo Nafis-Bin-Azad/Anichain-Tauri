@@ -1,34 +1,40 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
-use lazy_static::lazy_static;
-use regex::Regex;
+use std::path::{Path, PathBuf};
 use std::fs;
+use std::io::Read;
 use tracing;
 use reqwest;
-use urlencoding;
 use std::sync::Arc;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use urlencoding;
+use flate2;
+use roxmltree;
 
-// Constants from HAMA
-const ANIDB_API_DOMAIN: &str = "http://api.anidb.net:9001";
-const ANIDB_HTTP_API_URL: &str = "http://api.anidb.net:9001/httpapi?request=anime&client=hama&clientver=1&protover=1&aid=";
-const ANIDB_IMAGE_DOMAIN: &str = "https://cdn.anidb.net";
-const ANIDB_PIC_BASE_URL: &str = "https://cdn.anidb.net/images/main/";
-const ANILIST_API_URL: &str = "https://graphql.anilist.co";
-const MAL_API_URL: &str = "https://api.myanimelist.net/v2";
-
-lazy_static! {
-    static ref SUBSPLEASE_PATTERN: Regex = Regex::new(r"^\[(?:SubsPlease|Erai-raws|Judas|EMBER|PuyaSubs!|HorribleSubs)\] (.*?) - (\d{2,3})").unwrap();
-    static ref BLURAY_PATTERN: Regex = Regex::new(r"^(.*?)(?:\.S(\d{1,2}))?\s*(?:E|Episode\s*)(\d{1,3})").unwrap();
-    static ref NUMERIC_PATTERN: Regex = Regex::new(r"^(\d{2,3})(?:\v|\.|\s|$)").unwrap();
-    static ref EPISODE_PATTERN: Regex = Regex::new(r"(?i)(?:E|Episode|第)\s*(\d{1,3})").unwrap();
-    static ref IMAGE_CACHE: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+// Module organization
+mod constants {
+    pub const ANIDB_API_DOMAIN: &str = "http://api.anidb.net:9001";
+    pub const ANIDB_HTTP_API_URL: &str = "http://api.anidb.net:9001/httpapi?request=anime&client=hama&clientver=1&protover=1&aid=";
+    pub const ANIDB_IMAGE_DOMAIN: &str = "https://cdn.anidb.net";
+    pub const ANIDB_PIC_BASE_URL: &str = "https://cdn.anidb.net/images/main/";
+    pub const ANILIST_API_URL: &str = "https://graphql.anilist.co";
+    pub const MAL_API_URL: &str = "https://api.myanimelist.net/v2";
 }
 
-// HAMA API types
+mod patterns {
+    use lazy_static::lazy_static;
+    use regex::Regex;
+
+    lazy_static! {
+        pub static ref SUBSPLEASE: Regex = Regex::new(r"^\[(?:SubsPlease|Erai-raws|Judas|EMBER|PuyaSubs!|HorribleSubs)\] (.*?) - (\d{2,3})").unwrap();
+        pub static ref BLURAY: Regex = Regex::new(r"^(.*?)(?:\.S(\d{1,2}))?\s*(?:E|Episode\s*)(\d{1,3})").unwrap();
+        pub static ref NUMERIC: Regex = Regex::new(r"^(\d{2,3})(?:\v|\.|\s|$)").unwrap();
+        pub static ref EPISODE: Regex = Regex::new(r"(?i)(?:E|Episode|第)\s*(\d{1,3})").unwrap();
+    }
+}
+
+// Types
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AnimeEpisode {
     pub number: i32,
@@ -40,6 +46,7 @@ pub struct AnimeEpisode {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HamaMetadata {
     pub title: String,
+    pub original_title: Option<String>,
     pub season_count: i32,
     pub episode_count: i32,
     pub special_count: i32,
@@ -48,209 +55,401 @@ pub struct HamaMetadata {
     pub genres: Vec<String>,
     pub summary: Option<String>,
     pub rating: Option<f32>,
+    pub content_rating: Option<String>,
     pub image_url: Option<String>,
+    pub banner_url: Option<String>,
+    pub theme_url: Option<String>,
+    pub originally_available_at: Option<String>,
+    pub directors: Vec<String>,
+    pub writers: Vec<String>,
+    pub collections: Vec<String>,
     pub episodes: Vec<AnimeEpisode>,
     pub specials: Vec<AnimeEpisode>,
 }
 
-// HAMA API client
-pub struct HamaClient {
-    client: reqwest::Client,
+// Cache management
+struct ImageCache {
     cache: Arc<Mutex<HashMap<String, String>>>,
+}
+
+impl ImageCache {
+    fn new() -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(load_image_cache())),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.cache.lock().get(key).cloned()
+    }
+
+    fn set(&self, key: String, value: String) {
+        let mut cache = self.cache.lock();
+        cache.insert(key, value);
+        save_image_cache(&cache);
+    }
+}
+
+// Main client implementation
+pub struct HamaClient {
+    http_client: reqwest::Client,
+    image_cache: ImageCache,
 }
 
 impl HamaClient {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::builder()
+            http_client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(10))
                 .build()
                 .expect("Failed to create HTTP client"),
-            cache: Arc::new(Mutex::new(HashMap::new())),
+            image_cache: ImageCache::new(),
         }
     }
 
-    // Scan folder and extract metadata
     pub async fn scan_folder(&self, folder_path: &str) -> Result<Vec<HamaMetadata>, String> {
-        let mut results = Vec::new();
         let path = Path::new(folder_path);
-        
         if !path.exists() {
             return Err("Folder does not exist".to_string());
         }
 
         tracing::info!("Scanning folder: {}", folder_path);
+        
+        // First, find all video files recursively
+        let mut video_files = Vec::new();
+        self.collect_video_files(path, &mut video_files)?;
+        tracing::info!("Found {} video files", video_files.len());
 
-        // Map to store series and their episodes
+        // Group files by series based on filename patterns
         let mut series_map: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        for file_path in video_files {
+            if let Some(file_name) = file_path.file_name().and_then(|n| n.to_str()) {
+                // Try to extract series name from filename
+                if let Some(series_name) = self.extract_series_name_from_file(file_name) {
+                    tracing::info!("Found video file for series '{}': {}", series_name, file_name);
+                    series_map.entry(series_name)
+                        .or_insert_with(Vec::new)
+                        .push(file_path);
+                } else {
+                    tracing::warn!("Could not extract series name from: {}", file_name);
+                }
+            }
+        }
 
-        // Scan all entries in the root directory
+        tracing::info!("Found {} potential series", series_map.len());
+        for (series_name, paths) in &series_map {
+            tracing::info!("Series '{}' has {} files:", series_name, paths.len());
+            for path in paths {
+                tracing::debug!("  - {:?}", path);
+            }
+        }
+
+        let results = self.process_series_map(series_map).await?;
+        tracing::info!("Successfully processed {} series", results.len());
+        
+        for result in &results {
+            tracing::info!(
+                "Processed series: {} - {} episodes, {} specials",
+                result.title,
+                result.episode_count,
+                result.special_count
+            );
+        }
+
+        Ok(results)
+    }
+
+    fn collect_video_files(&self, path: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+        if path.is_dir() {
+            tracing::debug!("Scanning directory: {:?}", path);
+            for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                let path = entry.path();
+                if path.is_dir() {
+                    self.collect_video_files(&path, files)?;
+                } else if path.is_file() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        if is_video_file(file_name) {
+                            tracing::info!("Found video file: {}", file_name);
+                            files.push(path);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn process_series_map(&self, series_map: HashMap<String, Vec<PathBuf>>) -> Result<Vec<HamaMetadata>, String> {
+        let mut results = Vec::new();
+
+        for (series_name, paths) in series_map {
+            tracing::info!("Processing series: {}", series_name);
+            let (episodes, specials, episode_count, special_count) = self.collect_episodes(&paths)?;
+            
+            tracing::info!(
+                "Collected episodes for {}: {} regular, {} special",
+                series_name,
+                episode_count,
+                special_count
+            );
+            
+            let mut metadata = self.create_base_metadata(
+                &series_name,
+                episodes,
+                specials,
+                episode_count,
+                special_count
+            );
+
+            if let Ok(Some(additional_data)) = self.fetch_metadata(&series_name).await {
+                tracing::info!("Found additional metadata for: {}", series_name);
+                self.update_metadata(&mut metadata, additional_data);
+            } else {
+                tracing::warn!("No additional metadata found for: {}", series_name);
+            }
+
+            results.push(metadata);
+        }
+
+        Ok(results)
+    }
+
+    fn create_base_metadata(
+        &self,
+        title: &str,
+        episodes: Vec<AnimeEpisode>,
+        specials: Vec<AnimeEpisode>,
+        episode_count: i32,
+        special_count: i32
+    ) -> HamaMetadata {
+        HamaMetadata {
+            title: title.to_string(),
+            original_title: None,
+            season_count: 1,
+            episode_count,
+            special_count,
+            year: None,
+            studio: None,
+            genres: Vec::new(),
+            summary: None,
+            rating: None,
+            content_rating: None,
+            image_url: Some("https://placehold.co/225x319/gray/white/png?text=No+Image".to_string()),
+            banner_url: None,
+            theme_url: None,
+            originally_available_at: None,
+            directors: Vec::new(),
+            writers: Vec::new(),
+            collections: Vec::new(),
+            episodes,
+            specials,
+        }
+    }
+
+    fn update_metadata(&self, base: &mut HamaMetadata, additional: HamaMetadata) {
+        base.image_url = additional.image_url;
+        base.summary = additional.summary;
+        base.rating = additional.rating;
+        base.genres = additional.genres;
+        base.year = additional.year;
+        base.studio = additional.studio;
+    }
+
+    fn process_directory(&self, path: &Path, series_map: &mut HashMap<String, Vec<PathBuf>>) -> Result<(), String> {
+        let folder_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Skip the Specials folder at root level
+        if folder_name.to_lowercase() == "specials" {
+            return Ok(());
+        }
+
+        let series_name = self.extract_series_name(path)?;
+        tracing::info!("Processing directory for series: {}", series_name);
+        
+        // Recursively scan this directory for video files
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            let path = entry.path();
+            let entry_path = entry.path();
             
-            tracing::info!("Found entry: {}", path.display());
-            
-            if path.is_dir() {
-                let folder_name = path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-
-                // Skip the Specials folder at root level
-                if folder_name.to_lowercase() == "specials" {
-                    continue;
+            if entry_path.is_file() {
+                if let Some(file_name) = entry_path.file_name().and_then(|n| n.to_str()) {
+                    if is_video_file(file_name) {
+                        tracing::info!("Found video file: {} in directory: {}", file_name, series_name);
+                        series_map.entry(series_name.clone())
+                            .or_insert_with(Vec::new)
+                            .push(entry_path);
+                    }
                 }
+            } else if entry_path.is_dir() {
+                // Recursively process subdirectories
+                tracing::info!("Found subdirectory: {:?} in series: {}", entry_path, series_name);
+                for sub_entry in fs::read_dir(&entry_path).map_err(|e| e.to_string())? {
+                    let sub_entry = sub_entry.map_err(|e| e.to_string())?;
+                    let sub_path = sub_entry.path();
+                    if sub_path.is_file() {
+                        if let Some(file_name) = sub_path.file_name().and_then(|n| n.to_str()) {
+                            if is_video_file(file_name) {
+                                tracing::info!("Found video file: {} in subdirectory of {}", file_name, series_name);
+                                series_map.entry(series_name.clone())
+                                    .or_insert_with(Vec::new)
+                                    .push(sub_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
 
-                // Extract series name from folder
-                let series_name = self.extract_series_name(&path)?;
-                tracing::info!("Adding folder for series: {}", series_name);
-                series_map.entry(series_name)
-                    .or_insert_with(Vec::new)
-                    .push(path);
+    fn process_file(&self, path: &Path, series_map: &mut HashMap<String, Vec<PathBuf>>) -> Result<(), String> {
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
 
+        if !is_video_file(&file_name) {
+            return Ok(());
+        }
+
+        if let Some(series_name) = self.extract_series_name_from_file(&file_name) {
+            tracing::info!("Found video file for series: {} - {}", series_name, file_name);
+            series_map.entry(series_name)
+                .or_insert_with(Vec::new)
+                .push(path.to_path_buf());
+        }
+
+        Ok(())
+    }
+
+    fn collect_episodes(&self, paths: &[PathBuf]) -> Result<(Vec<AnimeEpisode>, Vec<AnimeEpisode>, i32, i32), String> {
+        let mut episodes = Vec::new();
+        let mut specials = Vec::new();
+        let mut episode_count = 0;
+        let mut special_count = 0;
+
+        tracing::info!("Starting episode collection for {} paths", paths.len());
+
+        for path in paths {
+            if path.is_dir() {
+                tracing::info!("Processing directory: {:?}", path);
+                let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
+                for entry in entries {
+                    let entry = entry.map_err(|e| e.to_string())?;
+                    let path = entry.path();
+                    
+                    if path.is_file() {
+                        let file_name = path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        if !is_video_file(&file_name) {
+                            tracing::debug!("Skipping non-video file: {}", file_name);
+                            continue;
+                        }
+
+                        let (episode, is_special) = self.process_single_file(&path)?;
+                        if is_special {
+                            tracing::info!("Found special episode: {} (number: {})", file_name, episode.number);
+                            specials.push(episode);
+                            special_count += 1;
+                        } else {
+                            tracing::info!("Found regular episode: {} (number: {})", file_name, episode.number);
+                            episodes.push(episode);
+                            episode_count += 1;
+                        }
+                    }
+                }
             } else if path.is_file() {
                 let file_name = path.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("")
                     .to_string();
 
-                // Check if it's a video file
-                if file_name.ends_with(".mkv") || file_name.ends_with(".mp4") {
-                    // Extract series name from filename
-                    if let Some(series_name) = self.extract_series_name_from_file(&file_name) {
-                        tracing::info!("Found video file for series: {} - {}", series_name, file_name);
-                        series_map.entry(series_name)
-                            .or_insert_with(Vec::new)
-                            .push(path);
-                    }
+                if !is_video_file(&file_name) {
+                    tracing::debug!("Skipping non-video file: {}", file_name);
+                    continue;
                 }
-            }
-        }
 
-        tracing::info!("Found {} unique series", series_map.len());
-
-        // Process each series
-        for (series_name, paths) in series_map {
-            let mut episodes = Vec::new();
-            let mut specials = Vec::new();
-            let mut episode_count = 0;
-            let mut special_count = 0;
-
-            // Process all paths for this series
-            for path in &paths {
-                if path.is_dir() {
-                    // Scan directory for episodes
-                    let main_episodes = self.scan_directory(path, false)?;
-                    episodes.extend(main_episodes.0);
-                    episode_count += main_episodes.1;
-
-                    // Check for Specials subfolder
-                    let specials_path = path.join("Specials");
-                    if specials_path.exists() && specials_path.is_dir() {
-                        let special_episodes = self.scan_directory(&specials_path, true)?;
-                        specials.extend(special_episodes.0);
-                        special_count += special_episodes.1;
-                    }
+                let (episode, is_special) = self.process_single_file(path)?;
+                if is_special {
+                    tracing::info!("Found special episode: {} (number: {})", file_name, episode.number);
+                    specials.push(episode);
+                    special_count += 1;
                 } else {
-                    // Handle single file
-                    let file_name = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-
-                    let is_special = is_special_episode(&file_name);
-                    let episode_number = extract_episode_number(&file_name);
-
-                    let episode = AnimeEpisode {
-                        number: episode_number,
-                        file_name: file_name.clone(),
-                        path: path.to_string_lossy().to_string(),
-                        is_special,
-                    };
-
-                    if is_special {
-                        specials.push(episode);
-                        special_count += 1;
-                    } else {
-                        episodes.push(episode);
-                        episode_count += 1;
-                    }
+                    tracing::info!("Found regular episode: {} (number: {})", file_name, episode.number);
+                    episodes.push(episode);
+                    episode_count += 1;
                 }
             }
-
-            // Create metadata object
-            let mut metadata = HamaMetadata {
-                title: series_name.clone(),
-                season_count: 1,
-                episode_count,
-                special_count,
-                year: None,
-                studio: None,
-                genres: Vec::new(),
-                summary: None,
-                rating: None,
-                image_url: None,
-                episodes,
-                specials,
-            };
-
-            // Try to fetch additional metadata and image
-            if let Ok(Some(additional_data)) = self.fetch_metadata(&series_name).await {
-                metadata.image_url = additional_data.image_url;
-                metadata.summary = additional_data.summary;
-                metadata.rating = additional_data.rating;
-                metadata.genres = additional_data.genres;
-                metadata.year = additional_data.year;
-                metadata.studio = additional_data.studio;
-            }
-
-            tracing::info!("Found {} episodes and {} specials for {}", 
-                metadata.episode_count, 
-                metadata.special_count,
-                metadata.title
-            );
-
-            results.push(metadata);
         }
 
-        tracing::info!("Total anime series found: {}", results.len());
-        Ok(results)
+        // Sort episodes by number
+        episodes.sort_by_key(|e| e.number);
+        specials.sort_by_key(|e| e.number);
+
+        tracing::info!("Episode collection complete:");
+        tracing::info!("Regular episodes: {} (count: {})", episodes.len(), episode_count);
+        tracing::info!("Special episodes: {} (count: {})", specials.len(), special_count);
+        
+        for episode in &episodes {
+            tracing::debug!("Regular episode: {} (number: {})", episode.file_name, episode.number);
+        }
+        for special in &specials {
+            tracing::debug!("Special episode: {} (number: {})", special.file_name, special.number);
+        }
+
+        Ok((episodes, specials, episode_count, special_count))
     }
 
-    // Helper function to scan a directory for episodes
-    fn scan_directory(&self, path: &Path, is_specials: bool) -> Result<(Vec<AnimeEpisode>, i32), String> {
-        let mut episodes = Vec::new();
-        let mut count = 0;
+    fn process_single_file(&self, path: &Path) -> Result<(AnimeEpisode, bool), String> {
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
 
-        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            
-            // Skip non-video files
-            if !file_name.ends_with(".mkv") && !file_name.ends_with(".mp4") {
-                continue;
+        let is_special = file_name.to_lowercase().contains("special") || 
+                        file_name.to_lowercase().contains("ova") ||
+                        path.parent().map(|p| p.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_lowercase() == "specials")
+                        .unwrap_or(false);
+
+        let number = if is_special {
+            // Try to extract number from special episode
+            if let Some(cap) = patterns::EPISODE.captures(&file_name) {
+                cap[1].parse().unwrap_or(0)
+            } else {
+                0
             }
+        } else {
+            // Try different patterns for regular episodes
+            if let Some(cap) = patterns::SUBSPLEASE.captures(&file_name) {
+                cap[2].parse().unwrap_or(0)
+            } else if let Some(cap) = patterns::BLURAY.captures(&file_name) {
+                cap[3].parse().unwrap_or(0)
+            } else if let Some(cap) = patterns::NUMERIC.captures(&file_name) {
+                cap[1].parse().unwrap_or(0)
+            } else if let Some(cap) = patterns::EPISODE.captures(&file_name) {
+                cap[1].parse().unwrap_or(0)
+            } else {
+                0
+            }
+        };
 
-            // Determine if this is a special episode
-            let is_special = is_specials || is_special_episode(&file_name);
-            
-            // Extract episode number
-            let episode_number = extract_episode_number(&file_name);
-            
-            // Create episode object
-            let episode = AnimeEpisode {
-                number: episode_number,
-                file_name: file_name.clone(),
-                path: entry.path().to_string_lossy().to_string(),
-                is_special,
-            };
-
-            episodes.push(episode);
-            count += 1;
-        }
-
-        Ok((episodes, count))
+        Ok((AnimeEpisode {
+            number,
+            file_name,
+            path: path.to_string_lossy().to_string(),
+            is_special,
+        }, is_special))
     }
 
     // Extract series name from path or files
@@ -266,12 +465,12 @@ impl HamaClient {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 
                 // Try SubsPlease pattern first
-                if let Some(caps) = SUBSPLEASE_PATTERN.captures(&file_name) {
+                if let Some(caps) = patterns::SUBSPLEASE.captures(&file_name) {
                     return Ok(clean_title_for_search(caps.get(1).unwrap().as_str()));
                 }
                 
                 // Try Bluray pattern
-                if let Some(caps) = BLURAY_PATTERN.captures(&file_name) {
+                if let Some(caps) = patterns::BLURAY.captures(&file_name) {
                     return Ok(clean_title_for_search(caps.get(1).unwrap().as_str()));
                 }
             }
@@ -340,83 +539,172 @@ impl HamaClient {
         // Add delay to respect rate limits
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-        let response = self.client.post(ANILIST_API_URL)
+        let response = self.http_client.post(constants::ANILIST_API_URL)
             .json(&json)
             .send()
             .await
             .map_err(|e| e.to_string())?;
 
-        if !response.status().is_success() {
-            tracing::warn!("Failed to fetch from AniList: {}", response.status());
-            return Ok(None);
-        }
-
-        let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-        let media = data.get("data").and_then(|d| d.get("Media"));
-
-        if let Some(media) = media {
+        let json: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+        
+        if let Some(media) = json.get("data").and_then(|d| d.get("Media")) {
             let image_url = media.get("coverImage")
                 .and_then(|c| c.get("large"))
                 .and_then(|u| u.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| "https://placehold.co/225x319/gray/white/png?text=No+Image".to_string());
-
-            // Cache the image URL
-            let mut cache = self.cache.lock();
-            cache.insert(title.to_string(), image_url.clone());
-            save_image_cache(&cache);
-
-            tracing::info!("Found metadata for '{}': {}", title, image_url);
+                .unwrap_or("https://placehold.co/225x319/gray/white/png?text=No+Image")
+                .to_string();
 
             Ok(Some(HamaMetadata {
                 title: title.to_string(),
+                original_title: None,
                 season_count: 1,
-                episode_count: 0,
+                episode_count: media.get("episodes").and_then(|e| e.as_i64()).map(|e| e as i32).unwrap_or(0),
                 special_count: 0,
                 year: media.get("startDate").and_then(|d| d.get("year")).and_then(|y| y.as_i64()).map(|y| y as i32),
                 studio: media.get("studios").and_then(|s| s.get("nodes")).and_then(|n| n.get(0)).and_then(|n| n.get("name")).and_then(|n| n.as_str()).map(String::from),
                 genres: media.get("genres").and_then(|g| g.as_array()).map_or_else(Vec::new, |g| g.iter().filter_map(|v| v.as_str().map(String::from)).collect()),
                 summary: media.get("description").and_then(|d| d.as_str()).map(String::from),
                 rating: media.get("averageScore").and_then(|s| s.as_f64()).map(|s| (s / 10.0) as f32),
+                content_rating: None,
                 image_url: Some(image_url),
+                banner_url: None,
+                theme_url: None,
+                originally_available_at: None,
+                directors: Vec::new(),
+                writers: Vec::new(),
+                collections: Vec::new(),
                 episodes: Vec::new(),
                 specials: Vec::new(),
             }))
         } else {
             tracing::warn!("No metadata found for: {}", title);
-            Ok(Some(HamaMetadata {
-                title: title.to_string(),
-                season_count: 1,
-                episode_count: 0,
-                special_count: 0,
-                year: None,
-                studio: None,
-                genres: Vec::new(),
-                summary: None,
-                rating: None,
-                image_url: Some("https://placehold.co/225x319/gray/white/png?text=No+Image".to_string()),
-                episodes: Vec::new(),
-                specials: Vec::new(),
-            }))
+            Ok(None)
         }
     }
 
     // Fetch metadata from MyAnimeList
     async fn fetch_mal_metadata(&self, title: &str) -> Result<Option<HamaMetadata>, String> {
-        // Note: MAL requires authentication, so we'll skip implementation for now
-        // In a real implementation, you'd need to handle OAuth2 authentication
+        tracing::info!("Fetching metadata from MyAnimeList for: {}", title);
+        
+        // First search for the anime
+        let search_url = format!("{}/anime?q={}&limit=1", constants::MAL_API_URL, urlencoding::encode(title));
+        
+        // Add delay to respect rate limits
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+        let response = match self.http_client
+            .get(&search_url)
+            .header("X-MAL-CLIENT-ID", std::env::var("MAL_CLIENT_ID").unwrap_or_default())
+            .send()
+            .await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    tracing::error!("Failed to fetch from MAL: {}", e);
+                    return Ok(None);
+                }
+            };
+
+        let json: serde_json::Value = match response.json().await {
+            Ok(json) => json,
+            Err(e) => {
+                tracing::error!("Failed to parse MAL response: {}", e);
+                return Ok(None);
+            }
+        };
+
+        if let Some(data) = json.get("data").and_then(|d| d.as_array()).and_then(|a| a.first()) {
+            let node = &data["node"];
+            
+            let id = node["id"].as_i64().unwrap_or_default();
+            
+            // Get detailed info
+            let details_url = format!("{}/anime/{}?fields=id,title,start_date,synopsis,mean,genres,rating,studios,media_type,num_episodes,pictures", 
+                constants::MAL_API_URL, 
+                id
+            );
+
+            // Add delay
+            tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+
+            let details = match self.http_client
+                .get(&details_url)
+                .header("X-MAL-CLIENT-ID", std::env::var("MAL_CLIENT_ID").unwrap_or_default())
+                .send()
+                .await {
+                    Ok(resp) => resp.json::<serde_json::Value>().await.ok(),
+                    Err(_) => None,
+                };
+
+            if let Some(details) = details {
+                let image_url = details["main_picture"]["large"].as_str()
+                    .unwrap_or("https://placehold.co/225x319/gray/white/png?text=No+Image")
+                    .to_string();
+
+                let genres = details["genres"].as_array()
+                    .map_or_else(Vec::new, |g| {
+                        g.iter()
+                            .filter_map(|genre| genre["name"].as_str().map(String::from))
+                            .collect()
+                    });
+
+                let studio = details["studios"].as_array()
+                    .and_then(|s| s.first())
+                    .and_then(|s| s["name"].as_str())
+                    .map(String::from);
+
+                return Ok(Some(HamaMetadata {
+                    title: details["title"].as_str().unwrap_or(title).to_string(),
+                    original_title: None,
+                    season_count: 1,
+                    episode_count: details["num_episodes"].as_i64().map(|e| e as i32).unwrap_or(0),
+                    special_count: 0,
+                    year: details["start_date"]
+                        .as_str()
+                        .and_then(|d| d.split('-').next())
+                        .and_then(|y| y.parse().ok()),
+                    studio,
+                    genres,
+                    summary: details["synopsis"].as_str().map(String::from),
+                    rating: details["mean"].as_f64().map(|r| r as f32),
+                    content_rating: details["rating"]
+                        .as_str()
+                        .map(|r| match r {
+                            "g" => "G - All Ages",
+                            "pg" => "PG - Children",
+                            "pg_13" => "PG-13 - Teens 13 and Older",
+                            "r" => "R - 17+ (violence & profanity)",
+                            "r+" => "R+ - Profanity & Mild Nudity",
+                            "rx" => "Rx - Hentai",
+                            _ => r,
+                        }.to_string()),
+                    image_url: Some(image_url),
+                    banner_url: None,
+                    theme_url: None,
+                    originally_available_at: details["start_date"].as_str().map(String::from),
+                    directors: Vec::new(),
+                    writers: Vec::new(),
+                    collections: Vec::new(),
+                    episodes: Vec::new(),
+                    specials: Vec::new(),
+                }));
+            }
+        }
+
         Ok(None)
     }
 
     // Fetch metadata from AniDB
     async fn fetch_anidb_metadata(&self, title: &str) -> Result<Option<HamaMetadata>, String> {
-        // Note: AniDB has strict rate limiting, so we'll implement a basic version
+        tracing::info!("Fetching metadata from AniDB for: {}", title);
         let clean_title = clean_title_for_search(title);
-        let cache = self.cache.lock();
         
-        if let Some(cached_url) = cache.get(&clean_title) {
+        // Check cache first
+        let cached_url = self.image_cache.get(&clean_title);
+        if let Some(cached_url) = cached_url {
+            tracing::info!("Found cached image for: {}", clean_title);
             return Ok(Some(HamaMetadata {
                 title: title.to_string(),
+                original_title: None,
                 season_count: 1,
                 episode_count: 0,
                 special_count: 0,
@@ -425,32 +713,235 @@ impl HamaClient {
                 genres: Vec::new(),
                 summary: None,
                 rating: None,
-                image_url: Some(cached_url.clone()),
+                content_rating: None,
+                image_url: Some(cached_url),
+                banner_url: None,
+                theme_url: None,
+                originally_available_at: None,
+                directors: Vec::new(),
+                writers: Vec::new(),
+                collections: Vec::new(),
                 episodes: Vec::new(),
                 specials: Vec::new(),
             }));
         }
 
-        // For now, return None as AniDB requires registration and has strict rate limiting
+        // Add delay to respect rate limits
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+
+        // Search AniDB using their HTTP API
+        let search_url = format!("{}/anime-titles.xml.gz", constants::ANIDB_API_DOMAIN);
+        
+        let response = match self.http_client
+            .get(&search_url)
+            .send()
+            .await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    tracing::error!("Failed to fetch from AniDB: {}", e);
+                    return Ok(None);
+                }
+            };
+
+        let bytes = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::error!("Failed to get response bytes: {}", e);
+                return Ok(None);
+            }
+        };
+
+        // Create GzDecoder with mut
+        let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+        
+        // Read and decompress the gzipped data
+        let mut decompressed = Vec::new();
+        if let Err(e) = decoder.read_to_end(&mut decompressed) {  // Simplified read_to_end call
+            tracing::error!("Failed to decompress data: {}", e);
+            return Ok(None);
+        }
+
+        // Convert bytes to string
+        let xml_str = match std::str::from_utf8(&decompressed) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to convert bytes to string: {}", e);
+                return Ok(None);
+            }
+        };
+
+        // Parse XML
+        let doc = match roxmltree::Document::parse(xml_str) {
+            Ok(doc) => doc,
+            Err(e) => {
+                tracing::error!("Failed to parse XML: {}", e);
+                return Ok(None);
+            }
+        };
+
+        // Find best matching anime
+        let mut best_match = None;
+        let mut best_score = 0.0;
+
+        for anime in doc.descendants().filter(|n| n.has_tag_name("anime")) {
+            for title_node in anime.children().filter(|n| n.has_tag_name("title")) {
+                let anime_title = title_node.text().unwrap_or_default();
+                let score = string_similarity(&clean_title.to_lowercase(), &anime_title.to_lowercase());
+                if score > best_score {
+                    best_score = score;
+                    best_match = Some(anime);
+                }
+            }
+        }
+
+        if let Some(anime) = best_match {
+            if best_score > 0.8 {  // Only use if confidence is high enough
+                let aid = anime.attribute("aid").unwrap_or_default();
+                
+                // Get detailed info
+                let details_url = format!("{}{}", constants::ANIDB_HTTP_API_URL, aid);
+                
+                // Add delay
+                tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+
+                let response = match self.http_client
+                    .get(&details_url)
+                    .send()
+                    .await {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            tracing::error!("Failed to fetch anime details: {}", e);
+                            return Ok(None);
+                        }
+                    };
+
+                let text = match response.text().await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        tracing::error!("Failed to get response text: {}", e);
+                        return Ok(None);
+                    }
+                };
+
+                let doc = match roxmltree::Document::parse(&text) {
+                    Ok(doc) => doc,
+                    Err(e) => {
+                        tracing::error!("Failed to parse XML: {}", e);
+                        return Ok(None);
+                    }
+                };
+
+                if let Some(anime) = doc.descendants().find(|n| n.has_tag_name("anime")) {
+                    let image_url = format!("{}{}", 
+                        constants::ANIDB_PIC_BASE_URL,
+                        anime.descendants()
+                            .find(|n| n.has_tag_name("picture"))
+                            .and_then(|n| n.text())
+                            .unwrap_or_default()
+                    );
+
+                    // Cache the image URL
+                    self.image_cache.set(clean_title, image_url.clone());
+
+                    let genres = anime.descendants()
+                        .filter(|n| n.has_tag_name("tag"))
+                        .filter_map(|n| n.text())
+                        .map(String::from)
+                        .collect();
+
+                    return Ok(Some(HamaMetadata {
+                        title: title.to_string(),
+                        original_title: anime.descendants()
+                            .find(|n| n.has_tag_name("title") && n.attribute("xml:lang") == Some("ja"))
+                            .and_then(|n| n.text())
+                            .map(String::from),
+                        season_count: 1,
+                        episode_count: anime.descendants()
+                            .find(|n| n.has_tag_name("episodecount"))
+                            .and_then(|n| n.text())
+                            .and_then(|t| t.parse().ok())
+                            .unwrap_or(0),
+                        special_count: 0,
+                        year: anime.descendants()
+                            .find(|n| n.has_tag_name("startdate"))
+                            .and_then(|n| n.text())
+                            .and_then(|d| d.split('-').next())
+                            .and_then(|y| y.parse().ok()),
+                        studio: anime.descendants()
+                            .find(|n| n.has_tag_name("creators"))
+                            .and_then(|n| n.text())
+                            .map(String::from),
+                        genres,
+                        summary: anime.descendants()
+                            .find(|n| n.has_tag_name("description"))
+                            .and_then(|n| n.text())
+                            .map(String::from),
+                        rating: anime.descendants()
+                            .find(|n| n.has_tag_name("ratings"))
+                            .and_then(|n| n.text())
+                            .and_then(|t| t.parse().ok())
+                            .map(|r: f32| r / 10.0),
+                        content_rating: None,
+                        image_url: Some(image_url),
+                        banner_url: None,
+                        theme_url: None,
+                        originally_available_at: anime.descendants()
+                            .find(|n| n.has_tag_name("startdate"))
+                            .and_then(|n| n.text())
+                            .map(String::from),
+                        directors: Vec::new(),
+                        writers: Vec::new(),
+                        collections: Vec::new(),
+                        episodes: Vec::new(),
+                        specials: Vec::new(),
+                    }));
+                }
+            }
+        }
+
         Ok(None)
     }
 
     // Helper function to extract series name from a file name
     fn extract_series_name_from_file(&self, file_name: &str) -> Option<String> {
         // Try SubsPlease pattern first
-        if let Some(caps) = SUBSPLEASE_PATTERN.captures(file_name) {
-            return Some(clean_title_for_search(caps.get(1)?.as_str()));
+        if let Some(caps) = patterns::SUBSPLEASE.captures(file_name) {
+            let title = clean_title_for_search(caps.get(1)?.as_str());
+            tracing::info!("Extracted title '{}' using SubsPlease pattern from '{}'", title, file_name);
+            return Some(title);
         }
         
         // Try Bluray pattern
-        if let Some(caps) = BLURAY_PATTERN.captures(file_name) {
-            return Some(clean_title_for_search(caps.get(1)?.as_str()));
+        if let Some(caps) = patterns::BLURAY.captures(file_name) {
+            let title = clean_title_for_search(caps.get(1)?.as_str());
+            tracing::info!("Extracted title '{}' using Bluray pattern from '{}'", title, file_name);
+            return Some(title);
         }
         
         // Try splitting by " - " and take the first part
         let parts: Vec<&str> = file_name.split(" - ").collect();
         if !parts.is_empty() {
-            return Some(clean_title_for_search(parts[0]));
+            let title = clean_title_for_search(parts[0]);
+            tracing::info!("Extracted title '{}' using split pattern from '{}'", title, file_name);
+            return Some(title);
+        }
+
+        // Try extracting from the file name itself
+        let name_without_ext = file_name.rsplit_once('.')
+            .map(|(name, _)| name)
+            .unwrap_or(file_name);
+        
+        // Remove episode numbers and common patterns
+        let clean_name = name_without_ext
+            .replace(|c: char| c.is_numeric(), "")
+            .replace("Episode", "")
+            .replace("Ep", "")
+            .replace("E", "");
+            
+        let title = clean_title_for_search(&clean_name);
+        if !title.is_empty() {
+            tracing::info!("Extracted title '{}' using fallback pattern from '{}'", title, file_name);
+            return Some(title);
         }
         
         None
@@ -486,16 +977,16 @@ fn clean_title_for_search(title: &str) -> String {
         .replace("]", "")
         .replace("(", "")
         .replace(")", "")
-        .replace("  ", " ") // Remove double spaces
+        .replace("  ", " ")
         .trim()
         .to_string();
 
-    // Split by " - " and take the first part if it exists
+    // Split by " - " and take the first part if it exists, but only if there's content after the dash
     let parts: Vec<&str> = clean.split(" - ").collect();
-    let final_title = if !parts.is_empty() {
+    let final_title = if parts.len() > 1 && !parts[1].trim().is_empty() {
         parts[0].trim()
     } else {
-        &clean
+        clean.trim()
     }.to_string();
 
     tracing::info!("Cleaned title '{}' to '{}'", title, final_title);
@@ -505,7 +996,7 @@ fn clean_title_for_search(title: &str) -> String {
 // Helper function to extract episode number
 fn extract_episode_number(filename: &str) -> i32 {
     // Try SubsPlease pattern first
-    if let Some(caps) = SUBSPLEASE_PATTERN.captures(filename) {
+    if let Some(caps) = patterns::SUBSPLEASE.captures(filename) {
         if let Some(ep_str) = caps.get(2) {
             if let Ok(num) = ep_str.as_str().parse::<i32>() {
                 tracing::debug!("Found episode number {} using SubsPlease pattern in {}", num, filename);
@@ -515,7 +1006,7 @@ fn extract_episode_number(filename: &str) -> i32 {
     }
 
     // Try Bluray pattern
-    if let Some(caps) = BLURAY_PATTERN.captures(filename) {
+    if let Some(caps) = patterns::BLURAY.captures(filename) {
         if let Some(ep_str) = caps.get(3) {
             if let Ok(num) = ep_str.as_str().parse::<i32>() {
                 tracing::debug!("Found episode number {} using Bluray pattern in {}", num, filename);
@@ -525,7 +1016,7 @@ fn extract_episode_number(filename: &str) -> i32 {
     }
 
     // Try numeric pattern (e.g., "01.mkv")
-    if let Some(caps) = NUMERIC_PATTERN.captures(filename) {
+    if let Some(caps) = patterns::NUMERIC.captures(filename) {
         if let Some(ep_str) = caps.get(1) {
             if let Ok(num) = ep_str.as_str().parse::<i32>() {
                 tracing::debug!("Found episode number {} using numeric pattern in {}", num, filename);
@@ -535,7 +1026,7 @@ fn extract_episode_number(filename: &str) -> i32 {
     }
 
     // Try episode pattern
-    if let Some(caps) = EPISODE_PATTERN.captures(filename) {
+    if let Some(caps) = patterns::EPISODE.captures(filename) {
         if let Some(ep_str) = caps.get(1) {
             if let Ok(num) = ep_str.as_str().parse::<i32>() {
                 tracing::debug!("Found episode number {} using episode pattern in {}", num, filename);
@@ -570,6 +1061,11 @@ fn is_special_episode(filename: &str) -> bool {
     lower.contains("ending") ||
     lower.contains("preview") ||
     lower.contains("recap")
+}
+
+// Helper functions
+fn is_video_file(file_name: &str) -> bool {
+    file_name.ends_with(".mkv") || file_name.ends_with(".mp4")
 }
 
 #[tauri::command]

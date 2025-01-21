@@ -77,20 +77,20 @@ const DownloadCard = React.memo(function DownloadCard({
           onLoad={handleImageLoad}
         />
 
-        <div className="absolute top-2 right-2">
-          <div className="px-2 py-1 rounded bg-amber-500 text-black font-bold text-sm">
+        <div className="absolute top-1 right-1">
+          <div className="px-1.5 py-0.5 rounded bg-amber-500 text-black font-bold text-xs">
             {totalEpisodes}
           </div>
         </div>
 
         <button
           onClick={handleDeleteClick}
-          className="absolute top-2 left-2 p-2 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
+          className="absolute top-1 left-1 p-1.5 rounded-full bg-black/50 text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black/70"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            width="16"
-            height="16"
+            width="12"
+            height="12"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"
@@ -104,9 +104,9 @@ const DownloadCard = React.memo(function DownloadCard({
         </button>
       </div>
 
-      <div className="mt-2 px-1">
-        <h3 className="font-medium text-sm line-clamp-2">{title}</h3>
-        <p className="text-xs text-gray-500 mt-1">
+      <div className="mt-1 px-0.5">
+        <h3 className="font-medium text-xs line-clamp-2">{title}</h3>
+        <p className="text-[10px] text-gray-500 mt-0.5">
           {seasonCount} season{seasonCount !== 1 ? "s" : ""}
         </p>
       </div>

@@ -1,9 +1,9 @@
 "use client";
 
+import React, { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import DownloadCard from "./DownloadCard";
 import { listen } from "@tauri-apps/api/event";
+import DownloadCard from "./DownloadCard";
 
 interface AnimeEpisode {
   number: number;
@@ -12,118 +12,91 @@ interface AnimeEpisode {
   is_special: boolean;
 }
 
-interface HamaMetadata {
+interface AnimeMetadata {
   title: string;
   season_count: number;
-  episode_count: number;
-  special_count: number;
-  year?: number;
-  studio?: string;
-  genres: string[];
-  summary?: string;
-  rating?: number;
-  image_url?: string;
   episodes: AnimeEpisode[];
   specials: AnimeEpisode[];
+  episode_count: number;
+  special_count: number;
+  image_url?: string;
 }
 
 export default function Downloads() {
-  const [folders, setFolders] = useState<HamaMetadata[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const lastUpdateRef = useRef<number>(Date.now());
+  const [animeList, setAnimeList] = useState<AnimeMetadata[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const loadFolders = useCallback(async () => {
+  const loadCachedData = async () => {
     try {
-      setIsLoading(true);
-      const scannedFolders = await invoke<HamaMetadata[]>(
-        "scan_downloaded_anime"
+      const cachedData = await invoke<AnimeMetadata[]>(
+        "get_cached_anime_metadata"
       );
-      const uniqueFolders = Array.from(
-        new Map(scannedFolders.map((folder) => [folder.title, folder])).values()
-      );
-
-      // Log essential information about loaded anime
-      console.log(
-        "Loaded anime:",
-        uniqueFolders.map((folder) => ({
-          title: folder.title,
-          totalEpisodes: folder.episodes.length + folder.specials.length,
-          imageUrl: folder.image_url,
-        }))
-      );
-
-      setFolders(uniqueFolders);
-    } catch (error) {
-      console.error("Error loading folders:", error);
+      console.log("Received cached data:", cachedData);
+      setAnimeList(cachedData);
+    } catch (e) {
+      console.error("Error loading cached data:", e);
+      setError("Failed to load cached data");
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
-  }, []);
-
-  const handleFolderChange = useCallback(() => {
-    const now = Date.now();
-    if (now - lastUpdateRef.current > 5000) {
-      loadFolders();
-      lastUpdateRef.current = now;
-    }
-  }, [loadFolders]);
+  };
 
   useEffect(() => {
-    loadFolders();
+    loadCachedData();
 
-    // Listen for download folder changes
-    const unsubscribe = listen("download-folder-changed", handleFolderChange);
+    // Listen for updates from the background task
+    const unlisten = listen<void>("anime_data_ready", () => {
+      console.log("Received anime_data_ready event, reloading cached data");
+      loadCachedData();
+    });
 
     return () => {
-      unsubscribe.then((fn) => fn());
+      unlisten.then((fn) => fn());
     };
-  }, [handleFolderChange]);
+  }, []);
 
-  const handleDelete = useCallback(
-    async (filename: string) => {
-      await invoke("delete_downloaded_file", { filename });
-      loadFolders();
-    },
-    [loadFolders]
-  );
-
-  const renderContent = useMemo(() => {
-    if (isLoading) {
-      return (
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-7 gap-4 p-4">
-          {[...Array(12)].map((_, i) => (
-            <div key={i} className="animate-pulse">
-              <div className="bg-gray-300 rounded-lg aspect-[2/3]" />
-            </div>
-          ))}
-        </div>
-      );
-    }
-
-    if (folders.length === 0) {
-      return (
-        <div className="flex items-center justify-center h-full text-gray-500">
-          No anime found in downloads folder
-        </div>
-      );
-    }
-
+  if (loading) {
     return (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-7 gap-4 p-4">
-        {folders.map((folder) => (
-          <DownloadCard
-            key={folder.title}
-            title={folder.title}
-            totalEpisodes={folder.episodes.length + folder.specials.length}
-            seasonCount={folder.season_count}
-            imageUrl={folder.image_url}
-            onClick={() => {}}
-            onDelete={() => handleDelete(folder.episodes[0]?.path)}
-          />
-        ))}
+      <div className="flex items-center justify-center h-full">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
       </div>
     );
-  }, [folders, isLoading, handleDelete]);
+  }
 
-  return <div id="downloads-container">{renderContent}</div>;
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-full text-red-500">
+        {error}
+      </div>
+    );
+  }
+
+  if (!animeList || animeList.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500">
+        No anime found
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10 gap-4 p-4">
+      {animeList.map((anime) => (
+        <DownloadCard
+          key={anime.title}
+          title={anime.title}
+          totalEpisodes={anime.episode_count + anime.special_count}
+          seasonCount={anime.season_count}
+          imageUrl={anime.image_url}
+          onDelete={() => {
+            // TODO: Implement delete functionality
+          }}
+          onClick={() => {
+            // TODO: Implement click functionality
+          }}
+        />
+      ))}
+    </div>
+  );
 }

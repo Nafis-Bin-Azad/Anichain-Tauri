@@ -16,6 +16,11 @@ use tauri::{State, Manager, Emitter};
 use tracing::Level;
 use sqlx::SqlitePool;
 use std::path::Path;
+use notify::{Watcher, RecursiveMode, Event};
+use std::sync::mpsc::channel;
+use std::time::Duration;
+use db::{get_qbittorrent_config, store_anime_metadata};
+use hama::fetch_anime_metadata;
 
 pub struct AppState {
     pub qb_client: Arc<Mutex<QBittorrentClient>>,
@@ -311,6 +316,92 @@ async fn scan_downloaded_anime(state: State<'_, AppState>) -> Result<Vec<hama::H
     Ok(metadata)
 }
 
+#[tauri::command]
+async fn get_cached_anime_metadata(state: State<'_, AppState>) -> Result<Vec<hama::HamaMetadata>, String> {
+    db::get_anime_metadata(&state.db_pool)
+        .await
+        .map_err(|e| format!("Failed to get cached anime metadata: {}", e))
+}
+
+#[tauri::command]
+async fn start_folder_watch(app_handle: tauri::AppHandle, folder_path: String) -> Result<(), String> {
+    let (tx, rx) = channel();
+    
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        match res {
+            Ok(event) => {
+                match event.kind {
+                    notify::EventKind::Remove(_) | 
+                    notify::EventKind::Create(_) |
+                    notify::EventKind::Modify(_) => {
+                        if let Ok(_) = tx.send(()) {
+                            tracing::debug!("Detected file system change: {:?}", event.kind);
+                        }
+                    },
+                    _ => {}
+                }
+            }
+            Err(e) => tracing::error!("Watch error: {:?}", e),
+        }
+    }).map_err(|e| e.to_string())?;
+
+    watcher.watch(folder_path.as_ref(), RecursiveMode::Recursive)
+        .map_err(|e| e.to_string())?;
+
+    // Keep watcher alive by storing it
+    let watcher = std::sync::Arc::new(std::sync::Mutex::new(watcher));
+    let watcher_clone = watcher.clone();
+    
+    // Spawn a task to handle debounced updates
+    tauri::async_runtime::spawn(async move {
+        let mut last_update = std::time::Instant::now();
+        while rx.recv().is_ok() {
+            if last_update.elapsed() > Duration::from_secs(2) {  // Reduced debounce time to 2 seconds
+                tracing::info!("Triggering rescan due to file system changes");
+                if let Err(e) = scan_anime_folder(&app_handle).await {
+                    tracing::error!("Failed to rescan folder: {}", e);
+                }
+                last_update = std::time::Instant::now();
+            }
+        }
+        // Keep watcher alive until the end of the task
+        drop(watcher_clone);
+    });
+
+    Ok(())
+}
+
+async fn scan_anime_folder(app_handle: &tauri::AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    let config = get_qbittorrent_config(&state.db_pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No qBittorrent config found".to_string())?;
+
+    let folder_path = config.download_folder;
+    tracing::info!("Download folder from config: {}", folder_path);
+
+    let metadata = fetch_anime_metadata(folder_path)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Clear existing metadata before storing new data
+    sqlx::query("DELETE FROM anime_metadata")
+        .execute(&*state.db_pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    store_anime_metadata(&state.db_pool, &metadata)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Err(e) = app_handle.emit("anime_data_ready", ()) {
+        tracing::error!("Failed to emit anime_data_ready event: {}", e);
+    }
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
@@ -393,9 +484,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             delete_downloaded_file,
             get_downloaded_files,
             scan_downloaded_anime,
-            hama::fetch_anime_metadata,
+            get_cached_anime_metadata,
+            start_folder_watch,
         ])
         .setup(|app| {
+            let handle = app.handle();
             let window = app.get_webview_window("main").expect("main window not found");
             let state = app.state::<AppState>();
             
@@ -416,6 +509,57 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     },
                 }) {
                     tracing::error!("Failed to emit initial connection status: {}", e);
+                }
+            });
+            
+            // Clone what we need for background anime data loading
+            let app_handle = handle.clone();
+            let db_pool = state.db_pool.clone();
+            let qb_client = state.qb_client.clone();
+            
+            // Spawn background task to load anime data
+            tokio::spawn(async move {
+                tracing::info!("Starting background anime data load");
+                
+                // Get download folder from qBittorrent config
+                let download_folder = match qb_client.lock().await.get_download_folder().await {
+                    Ok(folder) => folder,
+                    Err(e) => {
+                        tracing::error!("Failed to get download folder: {}", e);
+                        return;
+                    }
+                };
+
+                let path = std::path::Path::new(&download_folder);
+                if path.exists() {
+                    match hama::fetch_anime_metadata(download_folder).await {
+                        Ok(metadata) => {
+                            // Store metadata in database
+                            if let Err(e) = db::store_anime_metadata(&db_pool, &metadata).await {
+                                tracing::error!("Failed to store anime metadata: {}", e);
+                            }
+                            // Emit event to frontend that data is ready
+                            if let Err(e) = app_handle.emit("anime_data_ready", ()) {
+                                tracing::error!("Failed to emit anime_data_ready event: {}", e);
+                            }
+                        }
+                        Err(e) => tracing::error!("Failed to fetch anime metadata: {}", e),
+                    }
+                } else {
+                    tracing::warn!("Download folder does not exist: {}", download_folder);
+                }
+            });
+
+            // Start the folder watcher
+            let app_handle = handle.clone();
+            let db_pool = state.db_pool.clone();
+            
+            // Get the config and start the watcher in a blocking context
+            tokio::spawn(async move {
+                if let Ok(Some(config)) = get_qbittorrent_config(&db_pool).await {
+                    if let Err(e) = start_folder_watch(app_handle.clone(), config.download_folder).await {
+                        tracing::error!("Failed to start folder watcher: {}", e);
+                    }
                 }
             });
             
