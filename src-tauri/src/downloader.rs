@@ -1,4 +1,7 @@
+// src/downloader.rs
+
 use anyhow::{anyhow, Context, Result};
+use log::info;
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -90,7 +93,6 @@ impl QBittorrentClient {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .context("Failed to create HTTP client")?;
-
         Ok(Self {
             http_client: Arc::new(http_client),
             state: Arc::new(Mutex::new(ConnectionState {
@@ -103,11 +105,13 @@ impl QBittorrentClient {
         })
     }
 
+    /// Build the full API URL by concatenating base URL, API base path, and endpoint.
     async fn build_api_url(&self, endpoint: &str) -> Result<String> {
         let state = self.state.lock().await;
         Ok(format!("{}{}{}", state.base_url, API_BASE_PATH, endpoint))
     }
 
+    /// Ensure the client is authenticated.
     async fn ensure_authenticated(&self) -> Result<()> {
         let mut state = self.state.lock().await;
         if !state.is_authenticated {
@@ -117,23 +121,18 @@ impl QBittorrentClient {
         Ok(())
     }
 
+    /// Authenticates the client.
     async fn authenticate(&self, username: &str, password: &str) -> Result<()> {
         let login_url = self.build_api_url(AUTH_LOGIN).await?;
-        let response = self
-            .http_client
+        let response = self.http_client
             .post(&login_url)
             .form(&[("username", username), ("password", password)])
             .send()
             .await
             .context("Authentication request failed")?;
-
         if !response.status().is_success() {
-            return Err(anyhow!(
-                "Authentication failed with status: {}",
-                response.status()
-            ));
+            return Err(anyhow!("Authentication failed with status: {}", response.status()));
         }
-
         Ok(())
     }
 
@@ -143,8 +142,7 @@ impl QBittorrentClient {
     pub async fn get_torrents(&self) -> Result<Vec<TorrentInfo>> {
         self.ensure_authenticated().await?;
         let url = self.build_api_url(TORRENTS_INFO).await?;
-        let torrents = self
-            .http_client
+        let torrents = self.http_client
             .get(&url)
             .send()
             .await
@@ -172,7 +170,7 @@ impl QBittorrentClient {
         Ok(())
     }
 
-    /// Removes a torrent by hash. Set `delete_files` to `true` to remove associated files.
+    /// Removes a torrent by hash.
     pub async fn remove_torrent(&self, hash: &str, delete_files: bool) -> Result<()> {
         self.ensure_authenticated().await?;
         let url = self.build_api_url(TORRENTS_DELETE).await?;
@@ -231,8 +229,7 @@ impl QBittorrentClient {
     pub async fn get_rss_rules(&self) -> Result<Vec<RssRule>> {
         self.ensure_authenticated().await?;
         let url = self.build_api_url(RSS_RULES).await?;
-        let rules = self
-            .http_client
+        let rules = self.http_client
             .get(&url)
             .send()
             .await
@@ -281,8 +278,7 @@ impl QBittorrentClient {
     pub async fn get_rss_items(&self, feed_url: &str) -> Result<Vec<RssArticle>> {
         self.ensure_authenticated().await?;
         let url = self.build_api_url(RSS_ITEMS).await?;
-        let items = self
-            .http_client
+        let items = self.http_client
             .get(&url)
             .query(&[("withData", "true"), ("feedID", feed_url)])
             .send()
@@ -306,7 +302,6 @@ impl QBittorrentClient {
     pub async fn set_download_directory(&self, new_path: &str) -> Result<()> {
         self.ensure_authenticated().await?;
         let url = self.build_api_url(APP_PREFERENCES).await?;
-        // Prepare the JSON payload as a string.
         let json_payload = json!({ "save_path": new_path }).to_string();
         self.http_client
             .post(&url)
@@ -314,9 +309,25 @@ impl QBittorrentClient {
             .send()
             .await
             .context("Failed to update download directory")?;
-        
         let mut state = self.state.lock().await;
         state.config.download_directory = new_path.to_string();
         Ok(())
     }
+}
+
+/// Public function that starts downloading an anime via qBittorrent.
+/// This function creates a default client (using hardcoded configuration) and calls add_torrent.
+pub async fn start_download(anime_id: &str) -> Result<()> {
+    info!("Starting download for anime id: {}", anime_id);
+    // Here we assume that `anime_id` is the magnet URI.
+    // In production, you should load a configuration from your config file.
+    let config = QBittorrentConfig {
+        base_url: "http://127.0.0.1:8080".to_string(),
+        username: "admin".to_string(),
+        password: "admin".to_string(),
+        download_directory: "/downloads".to_string(),
+    };
+    let client = QBittorrentClient::new(config)?;
+    client.add_torrent(anime_id).await?;
+    Ok(())
 }
