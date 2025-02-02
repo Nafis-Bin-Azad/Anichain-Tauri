@@ -1,69 +1,85 @@
-use sqlx::{sqlite::SqlitePool, Row};
-use anyhow::{Result, anyhow};
-use crate::qbittorrent::QBittorrentConfig;
-use crate::hama::HamaMetadata;
-use tracing;
-use std::fs;
-use directories::ProjectDirs;
-use chrono;
+use std::{
+    collections::HashSet,
+    fs,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
+use anyhow::{anyhow, Result};
+use directories::ProjectDirs;
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool},
+    Row,
+};
+use tracing::{error, info, warn};
+
+use crate::{
+    hama::HamaMetadata,
+    qbittorrent::QBittorrentConfig,
+};
+
+/// Initializes the database by ensuring the data directory exists,
+/// creating a SQLite connection pool, and setting up necessary tables.
+/// It also inserts default qBittorrent settings if none exist.
 pub async fn init_db() -> Result<SqlitePool> {
-    // Get the app's data directory
+    // Get the application’s project directories.
     let project_dirs = ProjectDirs::from("com", "nafislord", "anichain")
         .ok_or_else(|| anyhow!("Failed to get project directories"))?;
-    
-    // Create data directory if it doesn't exist
     let data_dir = project_dirs.data_dir();
+
+    // Create the data directory if it does not exist.
     fs::create_dir_all(data_dir)?;
-    
-    // Create database path
+
+    // Build the database file path.
     let db_path = data_dir.join("anichain.db");
-    tracing::info!("Using database at: {}", db_path.display());
-    
-    // Connect to database with create_if_missing option
+    info!("Using database at: {}", db_path.display());
+
+    // Connect to the database with the `create_if_missing` option enabled.
     let pool = SqlitePool::connect_with(
-        sqlx::sqlite::SqliteConnectOptions::new()
+        SqliteConnectOptions::new()
             .filename(&db_path)
             .create_if_missing(true)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
-    ).await?;
+            .journal_mode(SqliteJournalMode::Wal),
+    )
+    .await?;
 
-    // Create tables
+    // Create the qbittorrent settings table.
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS qbittorrent_settings (
+        r#"
+        CREATE TABLE IF NOT EXISTS qbittorrent_settings (
             id INTEGER PRIMARY KEY,
             url TEXT NOT NULL,
             username TEXT NOT NULL,
             password TEXT NOT NULL,
             download_folder TEXT NOT NULL DEFAULT 'downloads'
-        )"
+        )
+        "#,
     )
     .execute(&pool)
     .await?;
 
-    // Create anime metadata table
+    // Create the anime metadata table.
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS anime_metadata (
+        r#"
+        CREATE TABLE IF NOT EXISTS anime_metadata (
             title TEXT PRIMARY KEY,
             path TEXT NOT NULL,
             metadata TEXT NOT NULL,
             last_modified INTEGER NOT NULL,
             created_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             UNIQUE(title)
-        )"
+        )
+        "#,
     )
     .execute(&pool)
     .await?;
 
-    // Check if settings exist
-    let count = sqlx::query_as::<_, (i32,)>("SELECT COUNT(*) FROM qbittorrent_settings")
+    // Check if qBittorrent settings already exist.
+    let count: (i32,) = sqlx::query_as("SELECT COUNT(*) FROM qbittorrent_settings")
         .fetch_one(&pool)
-        .await?
-        .0;
+        .await?;
 
-    // Insert default settings if none exist
-    if count == 0 {
-        tracing::info!("No existing qBittorrent settings found, inserting defaults...");
+    if count.0 == 0 {
+        info!("No existing qBittorrent settings found, inserting defaults...");
         let default_config = QBittorrentConfig {
             url: "http://127.0.0.1:8080".to_string(),
             username: "nafislord".to_string(),
@@ -71,17 +87,20 @@ pub async fn init_db() -> Result<SqlitePool> {
             download_folder: "downloads".to_string(),
         };
         save_qbittorrent_config(&pool, &default_config).await?;
-        tracing::info!("Default qBittorrent settings saved successfully");
+        info!("Default qBittorrent settings saved successfully");
     }
 
     Ok(pool)
 }
 
+/// Saves the given qBittorrent configuration to the database.
 pub async fn save_qbittorrent_config(pool: &SqlitePool, config: &QBittorrentConfig) -> Result<()> {
-    tracing::info!("Saving qBittorrent config to database...");
+    info!("Saving qBittorrent config to database...");
     sqlx::query(
-        "INSERT OR REPLACE INTO qbittorrent_settings (id, url, username, password, download_folder) 
-         VALUES (1, ?, ?, ?, ?)"
+        r#"
+        INSERT OR REPLACE INTO qbittorrent_settings (id, url, username, password, download_folder)
+        VALUES (1, ?, ?, ?, ?)
+        "#,
     )
     .bind(&config.url)
     .bind(&config.username)
@@ -89,16 +108,19 @@ pub async fn save_qbittorrent_config(pool: &SqlitePool, config: &QBittorrentConf
     .bind(&config.download_folder)
     .execute(pool)
     .await?;
-    tracing::info!("qBittorrent config saved successfully");
+    info!("qBittorrent config saved successfully");
     Ok(())
 }
 
+/// Retrieves the qBittorrent configuration from the database, if it exists.
 pub async fn get_qbittorrent_config(pool: &SqlitePool) -> Result<Option<QBittorrentConfig>> {
-    tracing::info!("Retrieving qBittorrent config from database...");
+    info!("Retrieving qBittorrent config from database...");
     let row = sqlx::query(
-        "SELECT url, username, password, download_folder 
-         FROM qbittorrent_settings 
-         WHERE id = 1"
+        r#"
+        SELECT url, username, password, download_folder
+        FROM qbittorrent_settings
+        WHERE id = 1
+        "#,
     )
     .fetch_optional(pool)
     .await?;
@@ -111,44 +133,43 @@ pub async fn get_qbittorrent_config(pool: &SqlitePool) -> Result<Option<QBittorr
     });
 
     if let Some(ref cfg) = config {
-        tracing::info!("Found qBittorrent config with URL: {}", cfg.url);
+        info!("Found qBittorrent config with URL: {}", cfg.url);
     } else {
-        tracing::info!("No qBittorrent config found in database");
+        info!("No qBittorrent config found in database");
     }
 
     Ok(config)
 }
 
+/// Stores a list of anime metadata entries in the database.
+/// For each anime, it determines an appropriate file path, computes
+/// the last modified time, serializes the metadata to JSON, and inserts or replaces
+/// the entry in the database.
 pub async fn store_anime_metadata(pool: &SqlitePool, metadata: &[HamaMetadata]) -> Result<()> {
-    tracing::info!("Storing {} anime series in database", metadata.len());
+    info!("Storing {} anime series in database", metadata.len());
+
     for anime in metadata {
-        // Get the first valid path from either episodes or specials
-        let path = anime.episodes.first()
-            .or_else(|| anime.specials.first())
-            .map(|e| e.path.clone())
-            .unwrap_or_else(|| {
-                tracing::warn!("No valid path found for {}, using title as path", anime.title);
-                anime.title.clone()
-            });
+        // Determine the file path for the anime.
+        let path = get_anime_path(anime);
 
-        tracing::info!("Processing anime: {} with path: {}, episodes: {}, specials: {}", 
-            anime.title, path, anime.episode_count, anime.special_count);
+        info!(
+            "Processing anime: {} with path: {}, episodes: {}, specials: {}",
+            anime.title, path, anime.episode_count, anime.special_count
+        );
 
-        // Get file modification time
-        let last_modified = fs::metadata(&path)
-            .map(|m| m.modified().unwrap_or_else(|_| std::time::SystemTime::now()))
-            .unwrap_or_else(|_| std::time::SystemTime::now())
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        // Get the last modified timestamp (in seconds since UNIX_EPOCH).
+        let last_modified = get_file_modified_time(&path);
 
-        // Serialize metadata to JSON
-        let json = serde_json::to_string(&anime)
-            .map_err(|e| anyhow!("Failed to serialize metadata: {}", e))?;
+        // Serialize the metadata to JSON.
+        let json = serde_json::to_string(anime)
+            .map_err(|e| anyhow!("Failed to serialize metadata for {}: {}", anime.title, e))?;
 
-        // Insert or replace metadata in database
+        // Insert or replace the metadata in the database.
         sqlx::query(
-            "INSERT OR REPLACE INTO anime_metadata (title, path, metadata, last_modified) VALUES (?, ?, ?, ?)"
+            r#"
+            INSERT OR REPLACE INTO anime_metadata (title, path, metadata, last_modified)
+            VALUES (?, ?, ?, ?)
+            "#,
         )
         .bind(&anime.title)
         .bind(&path)
@@ -156,52 +177,82 @@ pub async fn store_anime_metadata(pool: &SqlitePool, metadata: &[HamaMetadata]) 
         .bind(last_modified)
         .execute(pool)
         .await
-        .map_err(|e| anyhow!("Failed to store metadata: {}", e))?;
+        .map_err(|e| anyhow!("Failed to store metadata for {}: {}", anime.title, e))?;
 
-        tracing::info!("Stored/updated metadata for: {} with {} episodes and {} specials", 
-            anime.title, anime.episode_count, anime.special_count);
+        info!(
+            "Stored/updated metadata for: {} with {} episodes and {} specials",
+            anime.title, anime.episode_count, anime.special_count
+        );
     }
 
     Ok(())
 }
 
+/// Retrieves all unique anime metadata entries from the database.
 pub async fn get_anime_metadata(pool: &SqlitePool) -> Result<Vec<HamaMetadata>> {
-    // Use DISTINCT to ensure we only get unique entries
-    let rows = match sqlx::query(
-        "SELECT DISTINCT title, metadata FROM anime_metadata ORDER BY title"
+    let rows = sqlx::query(
+        r#"
+        SELECT DISTINCT title, metadata
+        FROM anime_metadata
+        ORDER BY title
+        "#,
     )
     .fetch_all(pool)
-    .await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!("Failed to fetch anime metadata: {}", e);
-            return Err(anyhow!("Failed to fetch anime metadata: {}", e));
-        }
-    };
+    .await
+    .map_err(|e| {
+        error!("Failed to fetch anime metadata: {}", e);
+        anyhow!("Failed to fetch anime metadata: {}", e)
+    })?;
 
     let mut result = Vec::new();
-    let mut seen_titles = std::collections::HashSet::new();
+    let mut seen_titles = HashSet::new();
 
     for row in rows {
         let json: String = row.get("metadata");
-        match serde_json::from_str(&json) {
+        match serde_json::from_str::<HamaMetadata>(&json) {
             Ok(metadata) => {
-                let metadata: HamaMetadata = metadata;
-                // Only add if we haven't seen this title before
                 if seen_titles.insert(metadata.title.clone()) {
-                    tracing::info!("Retrieved metadata for: {} with {} episodes and {} specials", 
-                        metadata.title, metadata.episode_count, metadata.special_count);
+                    info!(
+                        "Retrieved metadata for: {} with {} episodes and {} specials",
+                        metadata.title, metadata.episode_count, metadata.special_count
+                    );
                     result.push(metadata);
                 } else {
-                    tracing::warn!("Skipping duplicate entry for: {}", metadata.title);
+                    warn!("Skipping duplicate entry for: {}", metadata.title);
                 }
             }
             Err(e) => {
-                tracing::error!("Failed to parse metadata JSON: {}", e);
+                error!("Failed to parse metadata JSON: {}", e);
             }
         }
     }
-    
-    tracing::info!("Retrieved {} unique anime series from database", result.len());
+
+    info!("Retrieved {} unique anime series from database", result.len());
     Ok(result)
-} 
+}
+
+/// Helper function to get the last modified time of the file at the given path.
+/// Returns the timestamp as seconds since UNIX_EPOCH.
+fn get_file_modified_time(path: &str) -> i64 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .unwrap_or_else(|_| SystemTime::now())
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::default())
+        .as_secs() as i64
+}
+
+/// Helper function to determine the file path for an anime.
+/// It uses the first valid path from either the episodes or specials lists.
+/// If none is found, it logs a warning and falls back to using the anime title.
+fn get_anime_path(anime: &HamaMetadata) -> String {
+    anime
+        .episodes
+        .first()
+        .or_else(|| anime.specials.first())
+        .map(|entry| entry.path.clone())
+        .unwrap_or_else(|| {
+            warn!("No valid path found for '{}', using title as path", anime.title);
+            anime.title.clone()
+        })
+}
